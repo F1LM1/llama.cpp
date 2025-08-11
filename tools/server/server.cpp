@@ -1432,7 +1432,7 @@ struct server_slot {
     }
 
     bool can_speculate() const {
-        return ctx_dft && params.speculative.n_max > 0 && params.cache_prompt;
+        return (ctx_dft || has_mtp) && params.speculative.n_max > 0 && params.cache_prompt;
     }
 
     void add_token(const completion_token_output & token) {
@@ -2122,14 +2122,16 @@ struct server_context {
                     common_speculative_add_replacement_tgt_dft(slot.spec, pair.first.c_str(), pair.second.c_str());
                 }
             }
+            
+            // if model has MTP and no draft model is specified...
             else if (llama_model_n_nextn_layer(model) > 0) {
-              SRV_INF("model has nextn layers = %d\n", llama_model_n_nextn_layer(model));
-              slot.has_mtp = true;
-              
-              // assume one speculative token (true of all well-known MTP models so far)
-              slot.batch_spec = llama_batch_init(2, 0, 1);
-              params_base.speculative.n_min = 0;
-              params_base.speculative.n_max = 1;
+                SRV_INF("model has nextn layers = %d\n", llama_model_n_nextn_layer(model));
+                slot.has_mtp = true;
+                
+                // assume one speculative token (true of all well-known MTP models so far)
+                slot.batch_spec = llama_batch_init(2, 0, 1);
+                params_base.speculative.n_min = 0;
+                params_base.speculative.n_max = 1;
             }
 
             SLT_INF(slot, "new slot n_ctx_slot = %d\n", slot.n_ctx);
