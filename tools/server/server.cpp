@@ -1294,7 +1294,8 @@ struct server_slot {
     mtmd_context * mctx = nullptr;
 
     common_speculative * spec = nullptr;
-
+    bool has_mtp = false;    
+    
     std::vector<common_adapter_lora_info> lora;
 
     // the index relative to completion multi-task request
@@ -2120,6 +2121,15 @@ struct server_context {
                 for (auto &pair : params_base.speculative.replacements) {
                     common_speculative_add_replacement_tgt_dft(slot.spec, pair.first.c_str(), pair.second.c_str());
                 }
+            }
+            else if (llama_model_n_nextn_layer(model) > 0) {
+              SRV_INF("model has nextn layers = %d\n", llama_model_n_nextn_layer(model));
+              slot.has_mtp = true;
+              
+              // assume one speculative token (true of all well-known MTP models so far)
+              slot.batch_spec = llama_batch_init(2, 0, 1);
+              params_base.speculative.n_min = 0;
+              params_base.speculative.n_max = 1;
             }
 
             SLT_INF(slot, "new slot n_ctx_slot = %d\n", slot.n_ctx);

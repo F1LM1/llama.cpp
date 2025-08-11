@@ -18587,6 +18587,10 @@ const char * llama_model_cls_label(const struct llama_model * model, uint32_t i)
     return nullptr;
 }
 
+int32_t llama_model_n_nextn_layer(const llama_model * model) {
+    return model->hparams.nextn_predict_layers;
+}
+
 // deprecated
 int32_t llama_n_ctx_train(const llama_model * model) {
     return llama_model_n_ctx_train(model);
