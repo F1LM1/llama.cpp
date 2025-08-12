@@ -18673,6 +18673,22 @@ ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
     return llm->res->get_gf();
 }
 
+ggml_cgraph* llama_model::build_mtp_graph(const llm_graph_params& params,
+    ggml_tensor* hidden_state_inp, llama_token last_token_id, int n_past) const {
+    std::unique_ptr<llm_graph_context> llm;
+
+    switch (arch) {
+    case LLM_ARCH_GLM4_MOE:
+    {
+        llm = std::make_unique<llm_build_glm4_moe_mtp>(*this, params, hidden_state_inp, last_token_id, n_past);
+    } break;
+    default:
+        GGML_ABORT("fatal error");
+    }
+
+    return llm->res->get_gf();
+}
+
 //
 // interface implementation
 //
