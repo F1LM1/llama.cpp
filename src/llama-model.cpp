@@ -4510,7 +4510,7 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                         
                         if (hparams.nextn_predict_layers > 0 && static_cast<uint32_t>(i) >= n_layer - hparams.nextn_predict_layers) {
                             // skip all tensors in the NextN layers
-                            flags |= TENSOR_SKIP;
+                            // flags |= TENSOR_SKIP;
                         }
 
                         auto & layer = layers[i];
@@ -4574,12 +4574,37 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
 
                         // NextN/MTP tensors (preserved but unused) - conditionally load for last nextn_predict_layers
                         if (hparams.nextn_predict_layers > 0 && static_cast<uint32_t>(i) >= n_layer - hparams.nextn_predict_layers) {
+
+                            // our input/output layer sanity check prevents us from loading the eh_proj layer!
+                            // this is because eh_proj is labelled with a layer number in existing GGUFs,
+                            // so we need to set bid == <last layer number> to successfully load the tensors, but our io layer sanity check requires bid == -1.
+                            // this function is a hack that creates the nextn layers as LLM_TENSOR_LAYER_REPEATING instead.
+                            /* auto create_tensor_override_io_sanity_check =
+                                [&](llm_tensor type_enum, const char * suffix, int bid, const std::initializer_list<int64_t>& ne, int flags) -> ggml_tensor * {
+
+                                auto tn_orig = tn(type_enum, suffix, bid);
+                                llm_tensor_info info_override = *tn_orig.info;
+                                info_override.layer = LLM_TENSOR_LAYER_REPEATING;
+
+                                auto tn_override = tn_orig;
+                                tn_override.info = &info_override;
+
+                                return create_tensor(tn_override, ne, flags);
+                            };*/
+
                             layer.nextn.eh_proj          = create_tensor(tn(LLM_TENSOR_NEXTN_EH_PROJ, "weight", i), { 2 * n_embd, n_embd }, flags);
                             layer.nextn.embed_tokens     = create_tensor(tn(LLM_TENSOR_NEXTN_EMBED_TOKENS, "weight", i), { n_embd, n_vocab }, flags);
                             layer.nextn.enorm            = create_tensor(tn(LLM_TENSOR_NEXTN_ENORM, "weight", i), { n_embd }, flags);
                             layer.nextn.hnorm            = create_tensor(tn(LLM_TENSOR_NEXTN_HNORM, "weight", i), { n_embd }, flags);
                             layer.nextn.shared_head_head = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD, "weight", i), { n_embd, n_vocab }, flags);
                             layer.nextn.shared_head_norm = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_NORM, "weight", i), { n_embd }, flags);
+
+                            // layer.nextn.eh_proj          = create_tensor_override_io_sanity_check(LLM_TENSOR_NEXTN_EH_PROJ, "weight", i, { 2 * n_embd, n_embd }, flags);
+                            // layer.nextn.embed_tokens     = create_tensor_override_io_sanity_check(LLM_TENSOR_NEXTN_EMBED_TOKENS, "weight", i, { n_embd, n_vocab }, flags);
+                            // layer.nextn.enorm            = create_tensor_override_io_sanity_check(LLM_TENSOR_NEXTN_ENORM, "weight", i, { n_embd }, flags);
+                            // layer.nextn.hnorm            = create_tensor_override_io_sanity_check(LLM_TENSOR_NEXTN_HNORM, "weight", i, { n_embd }, flags);
+                            // layer.nextn.shared_head_head = create_tensor_override_io_sanity_check(LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD, "weight", i, { n_embd, n_vocab }, flags);
+                            // layer.nextn.shared_head_norm = create_tensor_override_io_sanity_check(LLM_TENSOR_NEXTN_SHARED_HEAD_NORM, "weight", i, { n_embd }, flags);
                         }
                     }
                 }

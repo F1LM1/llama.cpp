@@ -1432,7 +1432,8 @@ struct server_slot {
     }
 
     bool can_speculate() const {
-        return (ctx_dft || has_mtp) && params.speculative.n_max > 0 && params.cache_prompt;
+        // return (ctx_dft || has_mtp) && params.speculative.n_max > 0 && params.cache_prompt;
+        return (ctx_dft) && params.speculative.n_max > 0 && params.cache_prompt;
     }
 
     void add_token(const completion_token_output & token) {
