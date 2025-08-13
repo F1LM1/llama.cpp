@@ -18673,19 +18673,21 @@ ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
     return llm->res->get_gf();
 }
 
-ggml_cgraph* llama_model::build_mtp_graph(const llm_graph_params& params,
+ggml_cgraph * llama_model::build_mtp_graph(const llm_graph_params& params,
     ggml_tensor* hidden_state_inp, llama_token last_token_id, int n_past) const {
     std::unique_ptr<llm_graph_context> llm;
 
     switch (arch) {
     case LLM_ARCH_GLM4_MOE:
     {
+        printf("step: '%d'\n", 56);
         llm = std::make_unique<llm_build_glm4_moe_mtp>(*this, params, hidden_state_inp, last_token_id, n_past);
     } break;
     default:
         GGML_ABORT("fatal error");
     }
 
+    printf("step: '%d'\n", 57);
     return llm->res->get_gf();
 }
 
@@ -19004,3 +19006,11 @@ bool llama_model_is_diffusion(const llama_model * model) {
 const std::vector<std::pair<std::string, ggml_tensor *>> & llama_internal_get_tensor_map(const llama_model * model) {
     return model->tensors_by_name;
 }
+
+ggml_cgraph * llama_build_mtp_graph(const llama_model * model, const llm_graph_params & params,
+    ggml_tensor * hidden_state_inp, llama_token last_token_id, int n_past) {
+    printf("step: '%d'\n", 55);
+
+    return model->build_mtp_graph(params, hidden_state_inp, last_token_id, n_past);
+}
+

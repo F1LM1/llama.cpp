@@ -59,6 +59,7 @@ struct llama_context {
     float * get_embeddings();
     float * get_embeddings_ith(int32_t i);
     float * get_embeddings_seq(llama_seq_id seq_id);
+    ggml_tensor * get_embeddings_tensor();
 
     void attach_threadpool(
             ggml_threadpool_t threadpool,
@@ -199,6 +200,10 @@ public:
     // reserve a graph with a dummy ubatch of the specified size
     ggml_cgraph * graph_reserve(uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx);
 
+    llm_graph_params mtp_graph_params(llm_graph_result * res, const llama_ubatch & ubatch) const;
+
+    void set_logits(struct ggml_tensor* logit_override);
+
 private:
     llm_graph_params graph_params(
                         llm_graph_result * res,
@@ -240,6 +245,7 @@ private:
     // populated only when pooling_type == LLAMA_POOLING_TYPE_NONE
     size_t  embd_size = 0; // capacity (of floats) for embeddings
     float * embd      = nullptr;
+    ggml_tensor * embd_tensor = nullptr;
 
     // sequence embeddings output (map of [n_embd] vectors)
     // populated only when pooling_type != LLAMA_POOLING_TYPE_NONE
@@ -308,3 +314,4 @@ private:
 
     mutable int32_t n_reused = 0; // number of times the previous graph was reused
 };
+

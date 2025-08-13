@@ -1294,7 +1294,8 @@ struct server_slot {
     mtmd_context * mctx = nullptr;
 
     common_speculative * spec = nullptr;
-    bool has_mtp = false;    
+    bool has_mtp = false;
+    int32_t last_tok_idx = -1;
     
     std::vector<common_adapter_lora_info> lora;
 
@@ -1432,8 +1433,8 @@ struct server_slot {
     }
 
     bool can_speculate() const {
-        // return (ctx_dft || has_mtp) && params.speculative.n_max > 0 && params.cache_prompt;
-        return (ctx_dft) && params.speculative.n_max > 0 && params.cache_prompt;
+        return (ctx_dft || has_mtp) && params.speculative.n_max > 0 && params.cache_prompt;
+        // return (ctx_dft) && params.speculative.n_max > 0 && params.cache_prompt;
     }
 
     void add_token(const completion_token_output & token) {
@@ -1993,7 +1994,7 @@ struct server_context {
             SRV_ERR("failed to load model, '%s'\n", params_base.model.path.c_str());
             return false;
         }
-
+        
         vocab = llama_model_get_vocab(model);
 
         n_ctx = llama_n_ctx(ctx);
@@ -3531,6 +3532,7 @@ struct server_context {
                 const int tok_idx = slot.i_batch - i;
 
                 llama_token id = common_sampler_sample(slot.smpl, ctx, tok_idx);
+                slot.last_tok_idx = tok_idx;
 
                 slot.i_batch = -1;
 
@@ -3567,6 +3569,8 @@ struct server_context {
                 }
             }
 
+            SRV_DBG("starting speculative decoding: %d\n", 1);
+
             // do speculative decoding
             for (auto & slot : slots) {
                 if (!slot.is_processing() || !slot.can_speculate()) {
@@ -3583,7 +3587,9 @@ struct server_context {
                 }
 
                 // determine the max draft that fits the current slot state
+                SLT_DBG(slot, "starting mtp draft: %d\n", 2);
                 int n_draft_max = slot.params.speculative.n_max;
+                SLT_DBG(slot, "starting mtp draft: %d\n", 3);
 
                 // note: n_past is not yet increased for the `id` token sampled above
                 //       also, need to leave space for 1 extra token to allow context shifts
@@ -3601,15 +3607,25 @@ struct server_context {
                     continue;
                 }
 
+                SLT_DBG(slot, "slot has mtp: %d\n", slot.has_mtp);
+
                 llama_token id = slot.sampled;
 
-                struct common_speculative_params params_spec;
-                params_spec.n_draft   = n_draft_max;
-                params_spec.n_reuse   = llama_n_ctx(slot.ctx_dft) - slot.params.speculative.n_max;
-                params_spec.p_min     = slot.params.speculative.p_min;
+                llama_tokens draft;
+                if (slot.has_mtp) {
+                    SLT_DBG(slot, "starting mtp draft: %d\n", 1);
+                    llama_tokens draft = mtp_speculative_gen_draft(slot.smpl, ctx, id, slot.n_past, slot.last_tok_idx);
+                }
+                else {
+                    struct common_speculative_params params_spec;
+                    params_spec.n_draft = n_draft_max;
+                    params_spec.n_reuse = llama_n_ctx(slot.ctx_dft) - slot.params.speculative.n_max;
+                    params_spec.p_min = slot.params.speculative.p_min;
 
-                const llama_tokens & cached_text_tokens = slot.cache_tokens.get_text_tokens();
-                llama_tokens draft = common_speculative_gen_draft(slot.spec, params_spec, cached_text_tokens, id);
+                    const llama_tokens& cached_text_tokens = slot.cache_tokens.get_text_tokens();
+
+                    llama_tokens draft = common_speculative_gen_draft(slot.spec, params_spec, cached_text_tokens, id);
+                }
 
                 // ignore small drafts
                 if (slot.params.speculative.n_min > (int) draft.size()) {
