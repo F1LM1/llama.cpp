@@ -977,8 +977,6 @@ extern "C" {
     // returns NULL for invalid ids.
     LLAMA_API float * llama_get_logits_ith(struct llama_context * ctx, int32_t i);
 
-    LLAMA_API void llama_set_logits(struct llama_context* ctx, struct ggml_tensor* logit_override);
-
     // Get all output token embeddings.
     // when pooling_type == LLAMA_POOLING_TYPE_NONE or when using a generative model,
     // the embeddings for which llama_batch.logits[i] != 0 are stored contiguously
@@ -1464,6 +1462,9 @@ extern "C" {
     LLAMA_API llm_graph_params llama_mtp_graph_params(struct llama_context* ctx, class llm_graph_result * res, const struct llama_ubatch& ubatch);
 
     LLAMA_API ggml_status llama_graph_compute(struct llama_context * ctx, struct ggml_cgraph * gf, bool batched);
+
+    LLAMA_API void llama_build_and_execute_mtp_graph(struct llama_context * ctx,
+        ggml_tensor* hidden_state_inp, llama_token last_token_id, int32_t n_past, int32_t last_tok_idx);
 
     LLAMA_API ggml_tensor * llama_graph_result_get_logits(class llm_graph_result * res);
 

@@ -6,6 +6,7 @@
 #include "common.h"
 #include "sampling.h"
 #include "../src/llama-graph.h"
+#include "../src/llama-context.h"
 
 #include <cstring>
 #include <algorithm>
@@ -362,126 +363,40 @@ llama_tokens common_speculative_gen_draft(
 }
 
 
-llama_tokens mtp_speculative_gen_draft(
-        struct common_sampler * smpl,
-        struct llama_context * ctx,
-        llama_token id_last,
-        int32_t n_past,
-        int32_t last_tok_idx) {
+llama_token mtp_speculative_gen_draft(
+    struct common_sampler* smpl,
+    struct llama_context* ctx,
+    llama_token id_last,
+    int32_t n_past,
+    int32_t last_tok_idx) {
 
-    llama_tokens result;
-
-    LOG_INF("step: '%d'\n", 1);
-
-    // sample one token from the draft model -- this does NOT generalize to >1 MTP head
-    result.reserve(1);
-
-    // need to determine which architecture we're using so we call the correct MTP model
     const auto * model = llama_get_model(ctx);
-
-    LOG_INF("step: '%d'\n", 2);
-
-    //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
-    //auto * gf = model.build_graph(gparams);
-
-    LOG_INF("step: '%d'\n", 3);
-
-    /*if (!ggml_backend_sched_alloc_graph(sched.get(), gf)) {
-        LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
-        ret = GGML_STATUS_ALLOC_FAILED;
-        return nullptr;
-    }*/
-
-    //llm_graph_result res_mtp(ctx->graph_max_nodes());
-    llm_graph_result * res_mtp;
-    llama_ubatch ubatch_mtp;
-    ubatch_mtp.n_tokens = 1;
-    ubatch_mtp.pos = &n_past; // Critical for positional encoding
-
-    // We also need a minimal ubatch to provide positional context (RoPE)
-    // ubatch_mtp.tokens = &last_token_id;
-    // ubatch_mtp.seq_id = llama_get_main_seq_id(ctx); // Assuming a helper
-    // ubatch_mtp.logits = nullptr;
-    // ubatch_mtp.all_pos_0 = -1;
-    // ubatch_mtp.all_pos_1 = -1;
-    // ubatch_mtp.all_seq_id = -1;
-
-    // Manually construct the graph parameters
-    //const llm_graph_params params_mtp = {
-    //    /*.arch        =*/ model->arch,
-    //    /*.hparams     =*/ model->hparams,
-    //    /*.cparams     =*/ ctx->cparams,
-    //    /*.ubatch      =*/ ubatch_mtp,
-    //    /*.gtype       =*/ LLM_GRAPH_TYPE_DECODER,
-    //    /*.sched       =*/ ctx->sched.get(),
-    //    /*.backend_cpu =*/ ctx->backend_cpu,
-    //    /*.cvec        =*/ &ctx->cvec,
-    //    /*.loras       =*/ &ctx->loras,
-    //    /*.mctx        =*/ llama_get_memory(ctx), // Use the KV cache's memory context
-    //    /*.cross       =*/ &ctx->cross,
-    //    /*.n_outputs   =*/ 1,
-    //    /*.cb          =*/ ctx->graph_get_cb(),
-    //    /*.res         =*/ &res_mtp, // Point to our temporary result object
-    //};
-    llm_graph_params params_mtp = llama_mtp_graph_params(ctx, res_mtp, ubatch_mtp);
-
-    LOG_INF("step: '%d'\n", 4);
-
-    // ggml_cgraph* build_mtp_graph(const llm_graph_params & params,
-    //     ggml_tensor * hidden_state_inp, llama_token last_token_id, int n_past) const;
     auto * last_embd = llama_get_embeddings_tensor(ctx);
-
-    LOG_INF("step: '%d'\n", 5);
 
     GGML_ASSERT(model != nullptr);
     GGML_ASSERT(last_embd != nullptr);
+    llama_build_and_execute_mtp_graph(ctx, last_embd, id_last, n_past, last_tok_idx);
 
-    auto * gf = llama_build_mtp_graph(model, params_mtp, last_embd, id_last, n_past);
+    common_sampler_sample(smpl, ctx, last_tok_idx, true);
 
-    if (!gf) {
-        LOG_INF("%s: failed to initialize graph\n", __func__);
-        //ret = GGML_STATUS_FAILED;
-        return result;
-    }
+    const auto* cur_p = common_sampler_get_candidates(smpl);
+    /*LOG_INF("cur_p->size: %d\n", cur_p->size);
 
-    LOG_INF("step: '%d'\n", 6);
+    for (int k = 0; k < std::min(3, (int) cur_p->size); ++k) {
+        LOG_INF(" - draft candidate %3d, pos %3d: %6d (%8.3f) '%s'\n",
+                k, 0, cur_p->data[k].id, cur_p->data[k].p, common_token_to_piece(ctx, cur_p->data[k].id).c_str());
+    }*/
 
-    const auto status = llama_graph_compute(ctx, gf, false);
+    // add drafted token for each sequence
+    const llama_token id = cur_p->data[0].id;
 
-    LOG_INF("step: '%d'\n", 7);
+    // skip accepting draft token -- since we're only drafting one token this can't affect future outputs
+    // smpl will accept the token if it doesn't get rejected by main model later
+    // common_sampler_accept(smpl, id, true);
 
-    struct ggml_tensor * logits_mtp = llama_graph_result_get_logits(res_mtp);
-    float * ctx_logit_pointer = llama_get_logits(ctx);
-
-    LOG_INF("step: '%d'\n", 8);
-
-    if (logits_mtp) {
-        llama_set_logits(ctx, logits_mtp);
-    }
-
-    LOG_INF("step: '%d'\n", 9);
-
-    {
-        common_sampler_sample(smpl, ctx, last_tok_idx, true);
-
-        LOG_INF("step: '%d'\n", 10);
-
-        const auto * cur_p = common_sampler_get_candidates(smpl);
-
-        for (int k = 0; k < std::min(3, (int) cur_p->size); ++k) {
-            LOG_INF(" - draft candidate %3d, pos %3d: %6d (%8.3f) '%s'\n",
-                    k, 0, cur_p->data[k].id, cur_p->data[k].p, common_token_to_piece(ctx, cur_p->data[k].id).c_str());
-        }
-
-        // add drafted token for each sequence
-        const llama_token id = cur_p->data[0].id;
-
-        // skip accepting draft token -- since we're only drafting one token this can't affect future outputs
-        // smpl will accept the token if it doesn't get rejected by main model later
-        // common_sampler_accept(smpl, id, true);
-
-        result.push_back(id);
-    }
-
-    return result;
+    //llama_tokens result;
+    //result.reserve(1);
+    //result.push_back(id);
+    //return result;
+    return id;
 }

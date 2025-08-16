@@ -29,7 +29,7 @@ void common_speculative_add_replacement_tgt_dft(
 
 
 // sample up to n_draft tokens and add them to the batch using the draft model
-llama_tokens mtp_speculative_gen_draft(
+llama_token mtp_speculative_gen_draft(
     struct common_sampler* smpl,
     struct llama_context* ctx,
     llama_token id_last,
