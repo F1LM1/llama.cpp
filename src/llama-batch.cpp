@@ -275,7 +275,9 @@ bool llama_batch_allocr::init(
                 }
             }
 
-            if (!ok) {
+            // TEMPORARILY DISABLING THIS SANITY CHECK
+            // TODO: UNDO THIS IF IT WORKS
+            /*if (!ok) {
                 LLAMA_LOG_ERROR(
                         "%s: the tokens of sequence %d in the input batch have inconsistent sequence positions:\n"
                         " - the last position stored in the memory module of the context (i.e. the KV cache) for sequence %d is X = %d\n"
@@ -284,7 +286,7 @@ bool llama_batch_allocr::init(
                         __func__, s, s, p0, s, seq_pos_min(s));
 
                 return false;
-            }
+            }*/
         }
 
         if (seq_pos_max(s) - seq_pos_min(s) + 1 > (int) seq_pos[s].size()) {

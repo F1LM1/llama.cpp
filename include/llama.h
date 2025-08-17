@@ -544,9 +544,6 @@ extern "C" {
     // Returns true if the model is diffusion-based (like LLaDA, Dream, etc.)
     LLAMA_API bool llama_model_is_diffusion(const struct llama_model * model);
 
-    LLAMA_API ggml_cgraph * llama_build_mtp_graph(const struct llama_model * model, const struct llm_graph_params & params,
-        struct ggml_tensor * hidden_state_inp, llama_token last_token_id, int n_past);
-
     // Returns 0 on success
     LLAMA_API uint32_t llama_model_quantize(
             const char * fname_inp,
@@ -998,8 +995,6 @@ extern "C" {
     // when pooling_type == LLAMA_POOLING_TYPE_RANK, returns float[n_cls_out] with the rank(s) of the sequence
     // otherwise: float[n_embd] (1-dimensional)
     LLAMA_API float * llama_get_embeddings_seq(struct llama_context * ctx, llama_seq_id seq_id);
-
-    LLAMA_API ggml_tensor * llama_get_embeddings_tensor(struct llama_context * ctx);
 
     //
     // Vocab
@@ -1459,16 +1454,8 @@ extern "C" {
             ggml_opt_epoch_callback   callback_train,
             ggml_opt_epoch_callback   callback_eval);
 
-    LLAMA_API llm_graph_params llama_mtp_graph_params(struct llama_context* ctx, class llm_graph_result * res, const struct llama_ubatch& ubatch);
-
-    LLAMA_API ggml_status llama_graph_compute(struct llama_context * ctx, struct ggml_cgraph * gf, bool batched);
-
     LLAMA_API void llama_build_and_execute_mtp_graph(struct llama_context * ctx,
-        ggml_tensor* hidden_state_inp, llama_token last_token_id, int32_t n_past, int32_t last_tok_idx);
-
-    LLAMA_API ggml_tensor * llama_graph_result_get_logits(class llm_graph_result * res);
-
-
+        const llama_batch batch_inp, llama_token last_token_id, int32_t n_past, int32_t last_tok_idx);
 
 #ifdef __cplusplus
 }

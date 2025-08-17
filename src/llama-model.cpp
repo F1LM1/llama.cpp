@@ -13948,7 +13948,7 @@ struct llm_build_glm4_moe : public llm_graph_context {
 struct llm_build_glm4_moe_mtp : public llm_graph_context {
     llm_build_glm4_moe_mtp(const llama_model & model, const llm_graph_params & params,
         // For v0, let's rebuild the computational graph for every step + this mimics the vLLM impl parameterization
-        ggml_tensor * hidden_state_inp, llama_token last_token_id, int n_past
+        llama_token last_token_id, int n_past
     ) : llm_graph_context(params) {
         const int64_t n_embd_head = hparams.n_embd_head_v;
         GGML_ASSERT(n_embd_head == hparams.n_embd_head_k);
@@ -13961,7 +13961,8 @@ struct llm_build_glm4_moe_mtp : public llm_graph_context {
         // ggml_set_i32(inp_pos, n_past);
         ggml_tensor * inp_pos = build_inp_pos();
 
-        llm_graph_input_attn_no_cache * inp_attn = build_attn_inp_no_cache();//nullptr;
+        //llm_graph_input_attn_no_cache * inp_attn = build_attn_inp_no_cache();//nullptr;
+        auto * inp_attn = build_attn_inp_kv_unified();
 
         ggml_tensor * cur;
 
@@ -13982,9 +13983,9 @@ struct llm_build_glm4_moe_mtp : public llm_graph_context {
         ggml_tensor * token_emb = ggml_get_rows(ctx0, mtp_layer.nextn.embed_tokens, inp_token_id);
         ggml_tensor * token_emb_norm = build_norm(token_emb, mtp_layer.nextn.enorm, NULL, LLM_NORM_RMS, il);
 
-        ggml_tensor * prev_embedding_leaf = ggml_dup_tensor(ctx0, hidden_state_inp);
-        ggml_set_name(prev_embedding_leaf, "mtp_prev_embedding_leaf");
-        ggml_cpy(ctx0, hidden_state_inp, prev_embedding_leaf);
+        ggml_tensor* prev_embedding_leaf = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, model.hparams.n_embd);
+        ggml_set_name(prev_embedding_leaf, "mtp_prev_embedding_input");
+        ggml_set_input(prev_embedding_leaf);
 
         // vLLM l99  previous_hidden_states = self.hnorm(previous_hidden_states)
         ggml_tensor * hidden_state_norm = build_norm(prev_embedding_leaf, mtp_layer.nextn.hnorm, NULL, LLM_NORM_RMS, il);
@@ -18693,13 +18694,13 @@ ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
 }
 
 ggml_cgraph * llama_model::build_mtp_graph(const llm_graph_params& params,
-    ggml_tensor* hidden_state_inp, llama_token last_token_id, int n_past) const {
+    llama_token last_token_id, int n_past) const {
     std::unique_ptr<llm_graph_context> llm;
 
     switch (arch) {
     case LLM_ARCH_GLM4_MOE:
     {
-        llm = std::make_unique<llm_build_glm4_moe_mtp>(*this, params, hidden_state_inp, last_token_id, n_past);
+        llm = std::make_unique<llm_build_glm4_moe_mtp>(*this, params, last_token_id, n_past);
     } break;
     default:
         GGML_ABORT("fatal error");
@@ -19023,11 +19024,4 @@ bool llama_model_is_diffusion(const llama_model * model) {
 const std::vector<std::pair<std::string, ggml_tensor *>> & llama_internal_get_tensor_map(const llama_model * model) {
     return model->tensors_by_name;
 }
-
-ggml_cgraph * llama_build_mtp_graph(const llama_model * model, const llm_graph_params & params,
-    ggml_tensor * hidden_state_inp, llama_token last_token_id, int n_past) {
-
-    return model->build_mtp_graph(params, hidden_state_inp, last_token_id, n_past);
-}
-
 

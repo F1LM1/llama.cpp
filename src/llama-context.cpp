@@ -1448,8 +1448,9 @@ llm_graph_params llama_context::graph_params(
 }
 
 llm_graph_params llama_context::mtp_graph_params(
-    llm_graph_result* res,
-    const llama_ubatch& ubatch) {
+    llm_graph_result * res,
+    const llama_ubatch& ubatch,
+    const llama_memory_context_i * mctx) {
     size_t n_nodes = std::max<uint32_t>(1024u, 8u * 8u * (((model.hparams.nextn_predict_layers + 1) * model.n_tensors()) / model.hparams.n_layer));
     ggml_backend_sched_t temp_sched = create_temp_scheduler(n_nodes);
     return {
@@ -1462,12 +1463,27 @@ llm_graph_params llama_context::mtp_graph_params(
         /*.backend_cpu =*/ backend_cpu,
         /*.cvec        =*/ &cvec,
         /*.loras       =*/ &loras,
-        /*.mctx        =*/ memory->init_batch(*balloc, 1, false).get(),
+        /*.mctx        =*/ mctx,
         /*.cross       =*/ &cross,
         /*.n_outputs   =*/ 1,
         /*.cb          =*/ graph_get_cb(temp_sched),
         /*.res         =*/ res,
     };
+}
+
+std::unique_ptr<llama_memory_context_i> llama_context::mtp_memory_batch(const llama_batch& batch_inp) {
+    const auto& vocab = model.vocab;
+    const auto& hparams = model.hparams;
+
+    const int64_t n_vocab = vocab.n_tokens();
+    const int64_t n_embd = hparams.n_embd;
+
+    if (!balloc->init(batch_inp, vocab, memory.get(), n_embd, cparams.kv_unified ? LLAMA_MAX_SEQ : cparams.n_seq_max, false)) {
+        LLAMA_LOG_ERROR("%s: failed to initialize batch\n", __func__);
+        return nullptr;
+    }
+
+    return memory->init_batch(*balloc, 1, false);
 }
 
 ggml_status llama_context::graph_compute(
@@ -2481,13 +2497,6 @@ float * llama_get_embeddings_seq(llama_context * ctx, llama_seq_id seq_id) {
     return ctx->get_embeddings_seq(seq_id);
 }
 
-ggml_tensor * llama_get_embeddings_tensor(llama_context * ctx) {
-    ctx->synchronize();
-
-    return ctx->get_embeddings_tensor();
-}
-
-
 // llama adapter API
 
 int32_t llama_set_adapter_lora(
@@ -2985,42 +2994,43 @@ void llama_opt_epoch(
         callback_eval);
 }
 
-llm_graph_params llama_mtp_graph_params(llama_context* ctx, llm_graph_result* res, const llama_ubatch& ubatch) {
-    return ctx->mtp_graph_params(res, ubatch);
-}
-
-
-ggml_status llama_graph_compute(llama_context* ctx, ggml_cgraph* gf, bool batched) {
-    return ctx->graph_compute(gf, batched);
-}
-
 void llama_build_and_execute_mtp_graph(struct llama_context * ctx,
-    ggml_tensor * hidden_state_inp, llama_token last_token_id, int32_t n_past, int32_t last_tok_idx) {
+    const llama_batch batch_inp, llama_token last_token_id, int32_t n_past, int32_t last_tok_idx) {
 
     const auto * model = llama_get_model(ctx);
 
     auto res_mtp = std::make_unique<llm_graph_result>(ctx->graph_max_nodes());
+    llama_memory_context_ptr mctx = ctx->mtp_memory_batch(batch_inp);
+    const auto& ubatch_mtp = mctx->get_ubatch();
 
-    llama_ubatch ubatch_mtp;
-    ubatch_mtp.n_tokens = 1;
-    ubatch_mtp.pos = &n_past;
+    //llama_ubatch ubatch_mtp;
+    //ubatch_mtp.n_tokens = 1;
+    //ubatch_mtp.pos = &n_past;
 
-    auto params_mtp = std::make_unique<llm_graph_params>(ctx->mtp_graph_params(res_mtp.get(), ubatch_mtp));
-
-    auto* gf = model->build_mtp_graph(*params_mtp, hidden_state_inp, last_token_id, n_past);
-
+    auto params_mtp = std::make_unique<llm_graph_params>(ctx->mtp_graph_params(res_mtp.get(), ubatch_mtp, mctx.get()));
     ggml_backend_sched_t sched = params_mtp->sched;
+
+    auto * last_embd = ctx->get_embeddings_ith(last_tok_idx);
+
+    if (mctx && !mctx->apply()) {
+        LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
+    }
+
+    auto * gf = model->build_mtp_graph(*params_mtp, last_token_id, n_past);
 
     ggml_backend_sched_reset(sched); // clear the allocation of the previous graph
     ggml_backend_sched_alloc_graph(sched, gf); // explicitly allocate the new graph but do not execute it
 
     ggml_tensor * mtp_token_id_input = ggml_get_tensor(res_mtp->get_ctx(), "mtp_token_id_input");
-
     ggml_backend_tensor_set(mtp_token_id_input, &last_token_id, 0, sizeof(last_token_id)); // copy data to the newly allocated graph tensors
+
+    ggml_tensor * mtp_prev_embedding_input = ggml_get_tensor(res_mtp->get_ctx(), "mtp_prev_embedding_input");
+    ggml_backend_tensor_set(mtp_prev_embedding_input, last_embd, 0, ggml_nbytes(mtp_prev_embedding_input)); // copy data to the newly allocated graph tensors
+
     ggml_backend_sched_graph_compute(sched, gf); // execute the graph
 
     struct ggml_tensor * logits_mtp = res_mtp->get_logits();;
-    LLAMA_LOG_INFO("logits_mtp pointer address: %p\n", (void*)logits_mtp);
+    //LLAMA_LOG_INFO("logits_mtp pointer address: %p\n", (void*)logits_mtp);
 
     if (logits_mtp) {
         ctx->set_logits_ith(logits_mtp, sched, last_tok_idx);

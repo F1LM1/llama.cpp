@@ -200,11 +200,13 @@ public:
     // reserve a graph with a dummy ubatch of the specified size
     ggml_cgraph * graph_reserve(uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx);
 
-    llm_graph_params mtp_graph_params(llm_graph_result * res, const llama_ubatch & ubatch);
+    llm_graph_params mtp_graph_params(llm_graph_result * res, const llama_ubatch & ubatch, const llama_memory_context_i * mctx);
 
     void set_logits_ith(struct ggml_tensor * logit_override, ggml_backend_sched_t sched_override, int32_t i);
 
     ggml_backend_sched_t create_temp_scheduler(size_t n_nodes);
+
+    std::unique_ptr<llama_memory_context_i> mtp_memory_batch(const llama_batch& batch_inp);
 
 private:
     llm_graph_params graph_params(
