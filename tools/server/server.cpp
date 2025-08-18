@@ -3543,17 +3543,18 @@ struct server_context {
 
                 const int tok_idx = slot.i_batch - i;
 
-                // This should only trigger on a non-empty update batch once, after prompt processing but not during token generation
-                if (slot.has_mtp) {
-                    mtp_update_kv_cache(ctx, slot.mtp_kv_update_batch);
-                }
-
                 llama_token id = common_sampler_sample(slot.smpl, ctx, tok_idx);
                 slot.last_tok_idx = tok_idx;
+                SRV_INF("main loop sampled token: '%s'\n", common_token_to_piece(ctx, id, true).c_str());
 
                 slot.i_batch = -1;
 
                 common_sampler_accept(slot.smpl, id, true);
+
+                // This should only trigger on a non-empty update batch once, after prompt processing but not during token generation
+                if (slot.has_mtp) {
+                    mtp_update_kv_cache(ctx, slot.mtp_kv_update_batch);
+                }
 
                 slot.n_decoded += 1;
 
