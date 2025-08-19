@@ -3545,7 +3545,7 @@ struct server_context {
 
                 llama_token id = common_sampler_sample(slot.smpl, ctx, tok_idx);
                 slot.last_tok_idx = tok_idx;
-                SRV_INF("main loop sampled token: '%s'\n", common_token_to_piece(ctx, id, true).c_str());
+                //SRV_INF("main loop sampled token: '%s'\n", common_token_to_piece(ctx, id, true).c_str());
 
                 slot.i_batch = -1;
 

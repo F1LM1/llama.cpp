@@ -7,6 +7,7 @@
 #include "llama-mmap.h"
 #include "llama-model.h"
 #include "llama-graph.h"
+#include "llama-kv-cache-unified.h"
 
 #include <cinttypes>
 #include <cstring>
@@ -3000,7 +3001,20 @@ void llama_build_and_execute_mtp_graph(struct llama_context * ctx,
     const auto * model = llama_get_model(ctx);
 
     auto res_mtp = std::make_unique<llm_graph_result>(ctx->graph_max_nodes());
-    llama_memory_context_ptr mctx = ctx->mtp_memory_batch(batch_inp);
+    std::unique_ptr<llama_memory_context_i> mctx = ctx->mtp_memory_batch(batch_inp);
+
+    std::vector<uint32_t> idxs;
+    idxs.push_back(n_past);
+    llama_kv_cache_unified::slot_info sinfo = {
+        /*.s0   =*/ 0,
+        /*.s1   =*/ 0,
+        /*.strm =*/ { 0 },
+        /*.idxs =*/ { idxs },
+    };
+    llama_kv_cache_unified::slot_info_vec_t sinfos;
+    sinfos.push_back(sinfo);
+
+    static_cast<llama_kv_cache_unified_context*>(mctx.get())->set_sinfos(sinfos);
     const auto& ubatch_mtp = mctx->get_ubatch();
 
     //llama_ubatch ubatch_mtp;
@@ -3012,9 +3026,10 @@ void llama_build_and_execute_mtp_graph(struct llama_context * ctx,
 
     auto * last_embd = ctx->get_embeddings_ith(last_tok_idx);
 
-    if (mctx && !mctx->apply()) {
-        LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
-    }
+    //if (mctx && !mctx->set_n_kv()) {
+    //    LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
+    //}
+    static_cast<llama_kv_cache_unified_context*>(mctx.get())->set_n_kv();
 
     auto * gf = model->build_mtp_graph(*params_mtp, last_token_id, n_past);
 

@@ -2322,6 +2322,11 @@ bool llama_kv_cache_unified_context::apply() {
     return true;
 }
 
+void llama_kv_cache_unified_context::set_n_kv() {
+    n_kv = kv->get_n_kv();
+}
+
+
 llama_memory_status llama_kv_cache_unified_context::get_status() const {
     return status;
 }
@@ -2382,6 +2387,10 @@ void llama_kv_cache_unified_context::set_input_kq_mask(ggml_tensor * dst, const 
 
 void llama_kv_cache_unified_context::set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const {
     kv->set_input_pos_bucket(dst, ubatch);
+}
+
+void llama_kv_cache_unified_context::set_sinfos(llama_kv_cache_unified::slot_info_vec_t new_sinfos) {
+    sinfos = new_sinfos;
 }
 
 uint32_t llama_kv_cache_unified::get_padding(const llama_cparams & cparams) {

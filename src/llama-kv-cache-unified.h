@@ -340,6 +340,7 @@ public:
     //
 
     uint32_t get_n_kv() const;
+    void set_n_kv();
 
     // TODO: temporary
     bool get_supports_set_rows() const;
@@ -361,6 +362,8 @@ public:
     void set_input_k_shift   (ggml_tensor * dst) const;
     void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
     void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
+
+    void set_sinfos(slot_info_vec_t new_sinfos);
 
 private:
     llama_memory_status status;
