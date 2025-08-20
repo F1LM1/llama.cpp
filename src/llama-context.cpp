@@ -3050,5 +3050,7 @@ void llama_build_and_execute_mtp_graph(struct llama_context * ctx,
     if (logits_mtp) {
         ctx->set_logits_ith(logits_mtp, sched, last_tok_idx);
     }
+
+    ggml_backend_sched_free(sched);
 }
 
