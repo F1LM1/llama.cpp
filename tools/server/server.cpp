@@ -2138,12 +2138,14 @@ struct server_context {
                 SRV_INF("model has nextn layers = %d\n", llama_model_n_nextn_layer(model));
                 slot.has_mtp = true;
 
-                // assume one speculative token (true of all well-known MTP models so far)
-                slot.batch_spec = llama_batch_init(2, 0, 1);
+                // TODO: Build token argument for MTP
+                const int n_mtp_draft_target = 5; 
+
+                slot.batch_spec = llama_batch_init(1 + n_mtp_draft_target, 0, 1);
                 SLT_DBG(slot, "batch_spec contains %d tokens\n", slot.batch_spec.n_tokens);
 
                 params_base.speculative.n_min = 0;
-                params_base.speculative.n_max = 1;
+                params_base.speculative.n_max = n_mtp_draft_target;
 
                 SRV_INF("%s\n", "MTP needs embeddings on decode, enabling");
                 llama_set_embeddings(ctx, true);
@@ -3637,9 +3639,9 @@ struct server_context {
 
                 llama_tokens draft;
                 if (slot.has_mtp) {
-                    llama_token draft_id = mtp_speculative_gen_draft(slot.smpl, ctx, id, slot.n_past, slot.last_tok_idx);
-                    draft.reserve(1);
-                    draft.push_back(draft_id);
+                    int n_draft = std::min(n_draft_max, slot.params.speculative.n_max);
+
+                    draft = mtp_speculative_gen_draft(slot.smpl, ctx, id, slot.n_past, slot.last_tok_idx, n_draft);
                 }
                 else {
                     struct common_speculative_params params_spec;

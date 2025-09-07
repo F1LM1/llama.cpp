@@ -207,6 +207,8 @@ public:
     ggml_backend_sched_t create_temp_scheduler(size_t n_nodes);
 
     std::unique_ptr<llama_memory_context_i> mtp_memory_batch(const llama_batch& batch_inp);
+    
+    std::vector<uint8_t> mtp_embedding_buffer;
 
 private:
     llm_graph_params graph_params(

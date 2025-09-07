@@ -13947,15 +13947,20 @@ struct llm_build_glm4_moe : public llm_graph_context {
 
 struct llm_build_glm4_moe_mtp : public llm_graph_context {
     llm_build_glm4_moe_mtp(const llama_model & model, const llm_graph_params & params,
+        int mtp_head_idx) : llm_graph_context(params) {
         // For v0, let's rebuild the computational graph for every step + this mimics the vLLM impl parameterization
-        llama_token last_token_id, int n_past
-    ) : llm_graph_context(params) {
 
         const int64_t n_embd_head = hparams.n_embd_head_v;
         GGML_ASSERT(n_embd_head == hparams.n_embd_head_k);
 
         // Assuming a single MTP layer at the end
         const int il = hparams.n_layer - 1;
+
+        if (il < 0 || il >= (int)model.layers.size()) {
+            LLAMA_LOG_ERROR("FATAL ERROR: Calculated MTP layer index (%d) is out of bounds! The number of layers is %zu.\n", 
+                il, model.layers.size());
+            GGML_ABORT("fatal error");
+        }
         const auto & mtp_layer = model.layers[il];
 
         // ggml_tensor * inp_pos = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, 1);
@@ -14089,13 +14094,20 @@ struct llm_build_glm4_moe_mtp : public llm_graph_context {
             cur = ggml_add(ctx0, routed_out, shared_out);
             cb(cur, "ffn_out", il);
         }
+        ggml_tensor* final_hidden_state = cur;
         cur = ggml_add(ctx0, cur, ffn_inp);
 
         cur = build_norm(cur, mtp_layer.nextn.shared_head_norm, NULL, LLM_NORM_RMS, il);
         cur = build_lora_mm(mtp_layer.nextn.shared_head_head, cur);
-        
+
         res->t_logits = cur;
+
+        ggml_set_name(final_hidden_state, "mtp_next_embedding_output");
+        ggml_set_output(final_hidden_state);
+
         ggml_build_forward_expand(gf, res->t_logits);
+        ggml_build_forward_expand(gf, final_hidden_state);
+
     }
 };
 
@@ -18690,13 +18702,13 @@ ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
 }
 
 ggml_cgraph * llama_model::build_mtp_graph(const llm_graph_params& params,
-    llama_token last_token_id, int n_past) const {
+    int mtp_head_idx) const {
     std::unique_ptr<llm_graph_context> llm;
 
     switch (arch) {
     case LLM_ARCH_GLM4_MOE:
     {
-        llm = std::make_unique<llm_build_glm4_moe_mtp>(*this, params, last_token_id, n_past);
+        llm = std::make_unique<llm_build_glm4_moe_mtp>(*this, params, mtp_head_idx);
     } break;
     default:
         GGML_ABORT("fatal error");

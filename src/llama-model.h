@@ -475,8 +475,7 @@ struct llama_model {
 
     // TODO: move this to new llm_arch_model_i interface
     ggml_cgraph * build_graph(const llm_graph_params & params) const;
-    ggml_cgraph * build_mtp_graph(const llm_graph_params & params,
-        llama_token last_token_id, int n_past) const;
+    ggml_cgraph * build_mtp_graph(const llm_graph_params& params, int mtp_head_idx) const;
 
 private:
     struct impl;

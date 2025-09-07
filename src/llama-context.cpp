@@ -2995,16 +2995,19 @@ void llama_opt_epoch(
         callback_eval);
 }
 
-void llama_build_and_execute_mtp_graph(struct llama_context * ctx,
-    const llama_batch batch_inp, llama_token last_token_id, int32_t n_past, int32_t last_tok_idx) {
-
+float* llama_build_and_execute_mtp_graph(
+    struct llama_context * ctx,
+    const llama_batch batch_inp,
+    float * prev_embedding_data,
+    int32_t mtp_head_idx
+) {
     const auto * model = llama_get_model(ctx);
 
     auto res_mtp = std::make_unique<llm_graph_result>(ctx->graph_max_nodes());
     std::unique_ptr<llama_memory_context_i> mctx = ctx->mtp_memory_batch(batch_inp);
 
     std::vector<uint32_t> idxs;
-    idxs.push_back(n_past);
+    idxs.push_back(batch_inp.pos[0]);
     llama_kv_cache_unified::slot_info sinfo = {
         /*.s0   =*/ 0,
         /*.s1   =*/ 0,
@@ -3024,50 +3027,64 @@ void llama_build_and_execute_mtp_graph(struct llama_context * ctx,
     auto params_mtp = std::make_unique<llm_graph_params>(ctx->mtp_graph_params(res_mtp.get(), ubatch_mtp, mctx.get()));
     ggml_backend_sched_t sched = params_mtp->sched;
 
-    auto * last_embd = ctx->get_embeddings_ith(last_tok_idx);
-
     //if (mctx && !mctx->set_n_kv()) {
     //    LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
     //}
     static_cast<llama_kv_cache_unified_context*>(mctx.get())->set_n_kv();
 
-    auto * gf = model->build_mtp_graph(*params_mtp, last_token_id, n_past);
+    auto * gf = model->build_mtp_graph(*params_mtp, mtp_head_idx);
 
     if (!gf) {
         LLAMA_LOG_ERROR("%s: ERROR - The construction of the MTP graph failed (returned null).", __func__);
         if (sched) ggml_backend_sched_free(sched);
-        return;
+        return nullptr;
     }
 
     ggml_backend_sched_reset(sched); // clear the allocation of the previous graph
     ggml_backend_sched_alloc_graph(sched, gf); // explicitly allocate the new graph but do not execute it
 
+    llama_token token_id = batch_inp.token[0];
     ggml_tensor * mtp_token_id_input = ggml_get_tensor(res_mtp->get_ctx(), "mtp_token_id_input");
-    ggml_backend_tensor_set(mtp_token_id_input, &last_token_id, 0, sizeof(last_token_id)); // copy data to the newly allocated graph tensors
+    ggml_backend_tensor_set(mtp_token_id_input, &token_id, 0, sizeof(token_id)); // copy data to the newly allocated graph tensors
 
     ggml_tensor * mtp_prev_embedding_input = ggml_get_tensor(res_mtp->get_ctx(), "mtp_prev_embedding_input");
-    ggml_backend_tensor_set(mtp_prev_embedding_input, last_embd, 0, ggml_nbytes(mtp_prev_embedding_input)); // copy data to the newly allocated graph tensors
+
+    if (mtp_prev_embedding_input) {
+        ggml_backend_tensor_set(mtp_prev_embedding_input, prev_embedding_data, 0,
+             ggml_nbytes(mtp_prev_embedding_input)); // copy data to the newly allocated graph tensors
+    } else {
+        LLAMA_LOG_WARN("%s: Could not find 'mtp_prev_embedding_input' tensor in the MTP graph.\n", __func__);
+    }
 
     ggml_backend_sched_graph_compute(sched, gf); // execute the graph
 
     struct ggml_tensor * logits_mtp = res_mtp->get_logits();
 
     if (logits_mtp) {
-        float * logits_dest = ctx->get_logits_ith(last_tok_idx);
-        ggml_backend_t backend_res = ggml_backend_sched_get_tensor_backend(sched, logits_mtp);
-        if (backend_res) {
-            // ggml_backend_tensor_get is the function for GPU->CPU copies.
-            // We are copying a single 32-bit integer.
-            ggml_backend_tensor_get(logits_mtp, 
-                                    logits_dest, // Pointer to our C++ variable
-                                    0,          // Starting offset in bytes
-                                    ggml_nbytes(logits_mtp)); // Number of bytes to copy
+        float * logits_dest = llama_get_logits_ith(ctx, 0);
+        // ggml_backend_tensor_get is the function for GPU->CPU copies.
+        // We are copying a single 32-bit integer.
+        ggml_backend_tensor_get(logits_mtp, 
+                                logits_dest, // Pointer to our C++ variable
+                                0,          // Starting offset in bytes
+                                ggml_nbytes(logits_mtp)); // Number of bytes to copy
         } else {
-            LLAMA_LOG_ERROR("%s: ERROR - Could not obtain the backend for the logits tensor.", __func__);
-        }
-    } else {
         LLAMA_LOG_WARN("%s: WARNING - The MTP graph did not produce a logit tensor.", __func__);
     }
 
+    struct ggml_tensor * next_embedding_tensor = ggml_get_tensor(res_mtp->get_ctx(), "mtp_next_embedding_output");
+    float * next_embedding_data_ptr = nullptr;
+
+    if (next_embedding_tensor) {
+        if (ctx->mtp_embedding_buffer.size() < ggml_nbytes(next_embedding_tensor)) {
+            ctx->mtp_embedding_buffer.resize(ggml_nbytes(next_embedding_tensor));
+        }
+        ggml_backend_tensor_get(next_embedding_tensor, ctx->mtp_embedding_buffer.data(), 0, ggml_nbytes(next_embedding_tensor));
+        next_embedding_data_ptr = reinterpret_cast<float *>(ctx->mtp_embedding_buffer.data());
+    } else {
+        LLAMA_LOG_ERROR("%s: The MTP graph did not produce an output embedding tensor.\n", __func__);
+    }
+
     ggml_backend_sched_free(sched);
+    return next_embedding_data_ptr;
 }

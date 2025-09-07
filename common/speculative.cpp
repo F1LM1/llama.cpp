@@ -363,57 +363,91 @@ llama_tokens common_speculative_gen_draft(
 }
 
 
-llama_token mtp_speculative_gen_draft(
+llama_tokens mtp_speculative_gen_draft(
     struct common_sampler* smpl,
     struct llama_context* ctx,
     llama_token id_last,
     int32_t n_past,
-    int32_t last_tok_idx) {
+    int32_t last_tok_idx,
+    int32_t n_mtp_draft) {
 
-    if (!smpl) {
-        return -1;
+    llama_tokens draft_tokens;
+    draft_tokens.reserve(n_mtp_draft);
+
+    llama_token current_token = id_last;
+    int32_t current_n_past = n_past;
+
+    float* prev_embedding_data = llama_get_embeddings_ith(ctx, last_tok_idx);
+    LOG_DBG("\n--- MTP total draft %d ---\n", n_mtp_draft);
+    
+    // The same layer will draft multiple tokens before being validated
+    for (int i = 0; i < n_mtp_draft; ++i) {
+        if (prev_embedding_data == nullptr) {
+            LOG_DBG("ERROR: prev_embedding_data is null in iteration %d!\n", i);
+            break;
+        }
+        llama_batch batch = llama_batch_init(1, 0, 1);
+        common_batch_add(batch, current_token, current_n_past, {0}, true);
+
+        float* next_embedding_data = llama_build_and_execute_mtp_graph(
+            ctx, batch, prev_embedding_data, i
+        );
+
+        if (next_embedding_data == nullptr) {
+            LOG_DBG("ERROR: next_embedding_data returned null from graph execution\n", i);
+        }
+
+        // Apply logits + greedy: The main model has not yet selected 
+        // the token as correct, so we cannot apply all samples.
+        const llama_model * model = llama_get_model(ctx);
+        const llama_vocab * vocab = llama_model_get_vocab(model);
+        const int n_vocab = llama_n_vocab(vocab);
+
+        llama_token_data_array* cur_p = common_sampler_get_candidates(smpl);
+        cur_p->size = n_vocab;
+        for (int j = 0; j < n_vocab; ++j) {
+            cur_p->data[j].id = j;
+            // Place the MTP logits in the first slot of the context's logit buffer.
+            // This temporary storage is then read by the sampler.
+            cur_p->data[j].logit = llama_get_logits_ith(ctx, 0)[j];
+        }
+        cur_p->sorted = false;
+        common_sampler_apply_chain(smpl, cur_p);
+
+        const llama_token new_id = cur_p->data[0].id;
+
+        draft_tokens.push_back(new_id);
+
+        current_token = new_id;
+        current_n_past++;
+        prev_embedding_data = next_embedding_data;
+
+        llama_batch_free(batch);
+
+        if (!next_embedding_data) {
+            break;
+        }
     }
 
-    llama_batch batch = llama_batch_init(1, 0, 1);
-    common_batch_add(batch, id_last, n_past, {0}, true);
-
-    llama_build_and_execute_mtp_graph(ctx, batch, id_last, n_past, last_tok_idx);
-
-    const llama_model * model = llama_get_model(ctx);
-    const llama_vocab * vocab = llama_model_get_vocab(model);
-    const int n_vocab = llama_n_vocab(vocab);
-
-    llama_token_data_array * cur_p = common_sampler_get_candidates(smpl);
-
-    cur_p->size = n_vocab;
-    for (int i = 0; i < n_vocab; ++i) {
-        cur_p->data[i].id = i;
-        cur_p->data[i].logit = llama_get_logits_ith(ctx, last_tok_idx)[i];
-    }
-    cur_p->sorted = false;
-
-    common_sampler_apply_chain(smpl, cur_p);
-
-    const llama_token id = cur_p->data[0].id;
-
-    llama_batch_free(batch);
-
-    return id;
+    return draft_tokens;
 }
 
 
 void mtp_update_kv_cache(struct llama_context * ctx, std::vector<mtp_kv_update_data>& tokens, size_t batch_start, size_t n_tokens) {
-    mtp_kv_update_data token;
-
     if (n_tokens < 0) {
         n_tokens = tokens.size();
     }
 
-    for (int i = 0; i < std::min(tokens.size(), n_tokens); ++i) {
-        token = tokens[i];
-        //fprintf(stderr, "updating mtp kv cache with token  (%d, %d, %d)\n", token.id, token.n_past, (int) (token.tok_idx - batch_start));
+    for (size_t i = 0; i < std::min((size_t)tokens.size(), n_tokens); ++i) {
+        mtp_kv_update_data& token = tokens[i];
+        
+        llama_batch batch = llama_batch_init(1, 0, 1);
+        common_batch_add(batch, token.id, token.n_past, {0}, true);
+        
+        // Broken for now
+        // mtp_speculative_gen_draft(nullptr, ctx, token.id, token.n_past, token.tok_idx - batch_start);
 
-        mtp_speculative_gen_draft(nullptr, ctx, token.id, token.n_past, token.tok_idx - batch_start);
+        llama_batch_free(batch);
     }
 
     tokens.clear();
