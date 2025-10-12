@@ -17,10 +17,24 @@
 //
 // llama_context
 //
+// Key for the graph cache. It contains all parameters that define the graph topology.
+struct llama_graph_cache_key {
+    uint32_t n_tokens;
+    uint32_t n_outputs;
+    llama_mtp_op_type op_type;
+    bool causal_attn;
+
+    bool operator<(const llama_graph_cache_key& other) const {
+        return std::tie(n_tokens, n_outputs, op_type, causal_attn) <
+               std::tie(other.n_tokens, other.n_outputs, other.op_type, other.causal_attn);
+    }
+};
+
 struct llama_context_kv_cache_data {
     llama_kv_cache_unified::slot_info_vec_t last_main_model_sinfos;
     llama_kv_cache_unified::slot_info_vec_t resized_sinfo_for_force;
     const llama_kv_cache_unified::slot_info_vec_t * forced_sinfos = nullptr;
+    std::map<llama_graph_cache_key, llm_graph_result_ptr> graph_cache;
 };
 
 llama_context::llama_context(
@@ -745,39 +759,87 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         return nullptr;
     }
 
-    auto * res = gf_res_prev.get();
-    auto * gf  = res->get_gf();
+    auto * kvd = static_cast<llama_context_kv_cache_data *>(kv_cache_data);
+    llm_graph_result * res;
 
-    // the new graph parameters
-    // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
-    const auto gparams = graph_params(res, ubatch, mctx, gtype, mtp_params);
+    if (mtp_params.op_type != MTP_OP_NONE) {
+        int32_t n_outputs = 0;
+        for (int i = 0; i < ubatch.n_tokens; ++i) { if (ubatch.output[i]) n_outputs++; }
+        const llama_graph_cache_key key = { ubatch.n_tokens, (uint32_t)n_outputs, mtp_params.op_type, cparams.causal_attn };
 
-    if (!graph_reuse_disable && res->can_reuse(gparams)) {
+        auto & res_ptr = kvd->graph_cache[key];
+        if (!res_ptr) {
+            LLAMA_LOG_INFO("[GRAPH-CACHE] Creating a new graph container for key (op=%d, tok=%d, out=%d)\n",
+                (int)key.op_type, key.n_tokens, key.n_outputs);
+            res_ptr = std::make_unique<llm_graph_result>(graph_max_nodes());
+        }
+        res = res_ptr.get();
+
+        // the new graph parameters
+        // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
+        const auto gparams = graph_params(res, ubatch, mctx, gtype, mtp_params);
+        
+        // if (!graph_reuse_disable && res->can_reuse(gparams)) {
         //LLAMA_LOG_DEBUG("%s: reusing previous graph\n", __func__);
-
-        n_reused++;
-    } else {
-        res->reset();
-
+        //     LLAMA_LOG_INFO("[GRAPH-CACHE] HIT, reusing graph STRUCTURE for key (op=%d, tok=%d, out=%d)\n",
+        //         (int)key.op_type, key.n_tokens, key.n_outputs);
+        //     n_reused++;
+        // } else {
+        LLAMA_LOG_INFO("[GRAPH-CACHE] MISS, RECONSTRUCTING THE STRUCTURE of the graph for key (op=%d, tok=%d, out=%d)\n",
+            (int)key.op_type, key.n_tokens, key.n_outputs);
+        
         ggml_backend_sched_reset(sched.get());
         ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
 
-        //const auto t_start_us = ggml_time_us();
+        res->reset();
+        res->set_params(gparams);
+        res->gf = model.build_graph(gparams);
 
-        gf = model.build_graph(gparams);
-
-        //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
-
-        if (!gf) {
+        if (!res->gf) {
             LLAMA_LOG_ERROR("%s: failed to initialize graph\n", __func__);
             ret = GGML_STATUS_FAILED;
             return nullptr;
         }
 
-        if (!ggml_backend_sched_alloc_graph(sched.get(), gf)) {
+        if (!ggml_backend_sched_alloc_graph(sched.get(), res->gf)) {
             LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
             ret = GGML_STATUS_ALLOC_FAILED;
             return nullptr;
+        }
+        // }
+
+    } else {
+        res = gf_res_prev.get();
+        const auto gparams = graph_params(res, ubatch, mctx, gtype, mtp_params);
+
+        if (!graph_reuse_disable && res->can_reuse(gparams)) {
+            LLAMA_LOG_INFO("%s: reusing previous graph\n", __func__);
+            n_reused++;
+        } else {
+            LLAMA_LOG_INFO("%s: RECONSTRUCTED graph...\n", __func__);
+
+            ggml_backend_sched_reset(sched.get());
+            ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
+
+            res->reset();
+            res->set_params(gparams);
+            //const auto t_start_us = ggml_time_us();
+
+            res->gf = model.build_graph(gparams);
+
+            //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
+
+            if (!res->gf) {
+                LLAMA_LOG_ERROR("%s: failed to initialize graph\n", __func__);
+                ret = GGML_STATUS_FAILED;
+                return nullptr;
+            }
+
+            if (!ggml_backend_sched_alloc_graph(sched.get(), res->gf)) {
+                LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
+                ret = GGML_STATUS_ALLOC_FAILED;
+                return nullptr;
+            }
         }
     }
 
