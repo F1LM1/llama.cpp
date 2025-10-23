@@ -1366,6 +1366,7 @@ struct server_slot {
     // Speculative decoding stats
     int32_t n_draft_total = 0;      // Total draft tokens generated
     int32_t n_draft_accepted = 0;   // Draft tokens actually accepted
+    llama_tokens ids_prev_accepted; 
 
     void reset() {
         SLT_DBG(*this, "%s", "\n");
@@ -3468,7 +3469,10 @@ struct server_context {
                 batch.logits   + i,
             };
 
+            const int64_t t_prompt_main_start_us = ggml_time_us();
             const int ret = llama_decode(ctx, batch_view);
+            const int64_t t_prompt_main_end_us = ggml_time_us();
+            LOG_INF("[PERF-PROMPT] Main model prompt processing: %.2f ms\n", (t_prompt_main_end_us - t_prompt_main_start_us) / 1000.0);
 
             metrics.on_decoded(slots);
 
@@ -3516,7 +3520,10 @@ struct server_context {
                 // from the main model's prompt processing pass. This ensures the MTP layer's
                 // KV cache is perfectly aligned.
                 if (llama_mtp_prepare_sinfo_for_warmup(ctx)) {
+                    const int64_t t_warmup_start_us = ggml_time_us();
                     mtp_update_kv_cache(ctx, batch_view, true);
+                    const int64_t t_warmup_end_us = ggml_time_us();
+                    LOG_INF("[PERF-PROMPT] MTP warm-up: %.2f ms\n", (t_warmup_end_us - t_warmup_start_us) / 1000.0);
                     // Clean up the forced state to not affect subsequent decodes.
                     llama_mtp_cancel_sinfo_update(ctx);
                 } else {
@@ -3636,9 +3643,19 @@ struct server_context {
                 llama_token id = slot.sampled;
 
                 llama_tokens draft;
+                // const int64_t t_spec_start_us = ggml_time_us();
                 if (slot.has_mtp) {
+                    if (!slot.ids_prev_accepted.empty()) {
+                        LOG_INF("[MTP-FLOW] Updating KV cache with %zu tokens from the previous cycle.\n", slot.ids_prev_accepted.size());
+                        const int32_t n_past_base_update = slot.n_past - slot.ids_prev_accepted.size();
+                        mtp_accept_tokens(ctx, slot.ids_prev_accepted, n_past_base_update, slot.id);
+                        slot.ids_prev_accepted.clear();
+                    }
+
+                    llama_set_draft_input_hidden_state(ctx, llama_get_embeddings_ith(ctx, -1));
+
+                    LOG_INF("[MTP-FLOW] Generating a new draft from the token %d in the position %d.\n", id, slot.n_past);
                     llama_token draft_id = mtp_speculative_gen_draft(slot.smpl, ctx, id, slot.n_past, slot.last_tok_idx);
-                    draft.reserve(1);
                     draft.push_back(draft_id);
                 }
                 else {
@@ -3672,22 +3689,17 @@ struct server_context {
                 }
 
                 SLT_DBG(slot, "decoding speculative batch, size = %d\n", slot.batch_spec.n_tokens);
+                const int64_t t_valid_start_us = ggml_time_us();
+                // slot.batch_spec.mtp_params.op_type = MTP_OP_MAIN_VALIDATION;
                 llama_decode(ctx, slot.batch_spec);
+                const int64_t t_valid_end_us = ggml_time_us();
 
                 // the accepted tokens from the speculation
+                const int64_t t_accept_start_us = ggml_time_us();
                 const auto ids = common_sampler_sample_and_accept_n(slot.smpl, ctx, draft);
-                
-                if (slot.has_mtp) {
-                    llama_set_draft_input_hidden_state(ctx, llama_get_embeddings_ith(ctx, ids.size() - 1));
+                const int64_t t_accept_end_us = ggml_time_us();
 
-                    if (!ids.empty()) {
-                        llama_set_draft_input_hidden_state(ctx, llama_get_embeddings_ith(ctx, ids.size() - 1));
-                    } else {
-                        llama_set_draft_input_hidden_state(ctx, llama_get_embeddings_ith(ctx, 0));
-                    }
-
-                    mtp_accept_tokens(ctx, ids, slot.n_past, slot.id);
-                }
+                slot.ids_prev_accepted = ids;
 
                 slot.n_past    += ids.size();
                 slot.n_decoded += ids.size();

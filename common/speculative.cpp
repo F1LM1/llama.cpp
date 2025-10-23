@@ -382,7 +382,10 @@ llama_token mtp_speculative_gen_draft(
 
     // Perform the MTP draft generation decode. This writes the MTP layer's
     // KV state for the draft token into the cache.
+    const int64_t t_start_us = ggml_time_us();
     llama_decode(ctx, mtp_batch);
+    const int64_t t_end_us = ggml_time_us();
+    LOG_INF("[PERF-MTP] mtp_speculative_gen_draft internal decode: %.2f ms\n", (t_end_us - t_start_us) / 1000.0);
     llama_batch_free(mtp_batch);
 
     // CRITICAL: Purge the metadata for the draft token we just wrote.
@@ -423,7 +426,10 @@ void mtp_update_kv_cache(struct llama_context * ctx, const llama_batch& batch, b
     for (int i = 0; i < mtp_batch.n_tokens; ++i) {
         mtp_batch.logits[i] = true;
     }
+    const int64_t t_start_us = ggml_time_us();
     llama_decode(ctx, mtp_batch);
+    const int64_t t_end_us = ggml_time_us();
+    LOG_INF("[PERF-MTP] mtp_update_kv_cache internal decode (op=%d): %.2f ms\n", (int)mtp_batch.mtp_params.op_type, (t_end_us - t_start_us) / 1000.0);
 }
 
 void mtp_accept_tokens(

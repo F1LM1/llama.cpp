@@ -226,6 +226,7 @@ extern "C" {
         MTP_OP_WARMUP,
         MTP_OP_UPDATE_ACCEPTED,
         MTP_OP_DRAFT_GEN,
+        MTP_OP_MAIN_VALIDATION,
     } llama_mtp_op_type;
 
     typedef struct llama_mtp_params {

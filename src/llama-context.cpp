@@ -35,6 +35,7 @@ struct llama_context_kv_cache_data {
     llama_kv_cache_unified::slot_info_vec_t resized_sinfo_for_force;
     const llama_kv_cache_unified::slot_info_vec_t * forced_sinfos = nullptr;
     std::map<llama_graph_cache_key, llm_graph_result_ptr> graph_cache;
+    llm_graph_result_ptr gf_res_prev_validation; 
 };
 
 llama_context::llama_context(
@@ -788,12 +789,17 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         LLAMA_LOG_INFO("[GRAPH-CACHE] MISS, RECONSTRUCTING THE STRUCTURE of the graph for key (op=%d, tok=%d, out=%d)\n",
             (int)key.op_type, key.n_tokens, key.n_outputs);
         
+        const int64_t t_reset_start_us = ggml_time_us();
         ggml_backend_sched_reset(sched.get());
+        const int64_t t_reset_end_us = ggml_time_us();
         ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
 
         res->reset();
         res->set_params(gparams);
+        const int64_t t_build_start_us = ggml_time_us();
         res->gf = model.build_graph(gparams);
+        const int64_t t_build_end_us = ggml_time_us();
+        LLAMA_LOG_INFO("[PERF-GRAPH] Graph build (op=%d): %.2f ms\n", (int)mtp_params.op_type, (t_build_end_us - t_build_start_us) / 1000.0);
 
         if (!res->gf) {
             LLAMA_LOG_ERROR("%s: failed to initialize graph\n", __func__);
@@ -801,11 +807,17 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             return nullptr;
         }
 
+        const int64_t t_alloc_start_us = ggml_time_us();
         if (!ggml_backend_sched_alloc_graph(sched.get(), res->gf)) {
             LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
             ret = GGML_STATUS_ALLOC_FAILED;
             return nullptr;
         }
+        const int64_t t_alloc_end_us = ggml_time_us();
+            LLAMA_LOG_INFO("[PERF-GRAPH] sched_reset: %.2f ms | sched_alloc: %.2f ms (op=%d)\n",
+                (t_reset_end_us - t_reset_start_us) / 1000.0,
+                (t_alloc_end_us - t_alloc_start_us) / 1000.0,
+                (int)mtp_params.op_type);
         // }
 
     } else {
@@ -818,14 +830,19 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         } else {
             LLAMA_LOG_INFO("%s: RECONSTRUCTED graph...\n", __func__);
 
+            const int64_t t_reset_start_us = ggml_time_us();
             ggml_backend_sched_reset(sched.get());
+            const int64_t t_reset_end_us = ggml_time_us();
             ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
 
             res->reset();
             res->set_params(gparams);
             //const auto t_start_us = ggml_time_us();
 
+            const int64_t t_build_start_us = ggml_time_us();
             res->gf = model.build_graph(gparams);
+            const int64_t t_build_end_us = ggml_time_us();
+            LLAMA_LOG_INFO("[PERF-GRAPH] Graph build (op=%d): %.2f ms\n", (int)mtp_params.op_type, (t_build_end_us - t_build_start_us) / 1000.0);
 
             //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
 
@@ -835,15 +852,21 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
                 return nullptr;
             }
 
+            const int64_t t_alloc_start_us = ggml_time_us();
             if (!ggml_backend_sched_alloc_graph(sched.get(), res->gf)) {
                 LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
                 ret = GGML_STATUS_ALLOC_FAILED;
                 return nullptr;
             }
+            const int64_t t_alloc_end_us = ggml_time_us();
+            LLAMA_LOG_INFO("[PERF-GRAPH] sched_reset: %.2f ms | sched_alloc: %.2f ms (op=%d)\n",
+                (t_reset_end_us - t_reset_start_us) / 1000.0,
+                (t_alloc_end_us - t_alloc_start_us) / 1000.0,
+                (int)mtp_params.op_type);
         }
     }
 
-    if (mtp_params.op_type != MTP_OP_NONE) { // If it is any MTP operation
+    if (mtp_params.op_type != MTP_OP_NONE && mtp_params.op_type != MTP_OP_MAIN_VALIDATION) {
         if (!prepare_mtp_graph_inputs(res, ubatch, mtp_params)) {
             ret = GGML_STATUS_FAILED;
             return nullptr;
@@ -1241,7 +1264,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
         // extract embeddings
         if (t_embd && n_outputs > 0) {
-            if (batch_inp.mtp_params.op_type == MTP_OP_NONE) {
+            if (batch_inp.mtp_params.op_type == MTP_OP_NONE || batch_inp.mtp_params.op_type == MTP_OP_MAIN_VALIDATION) {
                 ggml_backend_t backend_embd = ggml_backend_sched_get_tensor_backend(sched.get(), t_embd);
                 GGML_ASSERT(backend_embd != nullptr);
 
@@ -3133,7 +3156,7 @@ std::unique_ptr<llama_memory_context_i> llama_context::initialize_decode_context
     } else {
         mctx = memory->init_batch(*balloc, cparams.n_ubatch, output_all);
 
-        if (batch_inp.mtp_params.op_type == MTP_OP_NONE) {
+        if (batch_inp.mtp_params.op_type == MTP_OP_NONE || batch_inp.mtp_params.op_type == MTP_OP_MAIN_VALIDATION) {
             if (mctx && mctx->get_status() == LLAMA_MEMORY_STATUS_SUCCESS) {
                 kvd->last_main_model_sinfos = static_cast<llama_kv_cache_unified_context *>(mctx.get())->get_sinfos();
             } else {

@@ -442,34 +442,22 @@ void llm_graph_result::set_inputs(const llama_ubatch * ubatch) {
 
 bool llm_graph_result::can_reuse(const llm_graph_params & params) {
     if (!this->params.allow_reuse(params)) {
-        if (debug > 1) {
-            LLAMA_LOG_DEBUG("%s: cannot reuse graph due to incompatible graph parameters\n", __func__);
-        }
-
+        LLAMA_LOG_WARN("[GRAPH-REUSE-FAIL] Failure in 'allow_reuse'. Incompatible parameters.");
+        LLAMA_LOG_WARN("                   n_tokens: %d vs %d, op_type: %d vs %d",
+                       this->params.ubatch.n_tokens, params.ubatch.n_tokens,
+                       (int)this->params.mtp_params.op_type, (int)params.mtp_params.op_type);
         return false;
     }
 
-    if (debug > 1) {
-        LLAMA_LOG_DEBUG("%s: checking compatibility of %d inputs:\n", __func__, (int) inputs.size());
-    }
-
-    bool res = true;
-
-    for (auto & input : inputs) {
-        const bool cur = input->can_reuse(params);
-
-        if (debug > 1) {
-            LLAMA_LOG_DEBUG("%s: can_reuse = %d\n", "placeholder", cur);
+    for (size_t i = 0; i < inputs.size(); ++i) {
+        if (!inputs[i]->can_reuse(params)) {
+            LLAMA_LOG_WARN("[GRAPH-REUSE-FAIL] Failure in 'can_reuse' of the input node #%zu.", i);
+            return false;
         }
-
-        res = res && cur;
     }
 
-    if (debug > 0) {
-        LLAMA_LOG_DEBUG("%s: can reuse graph = %d\n", __func__, res);
-    }
-
-    return res;
+    LLAMA_LOG_DEBUG("%s: can reuse graph = true\n", __func__);
+    return true;
 }
 
 llm_graph_input_i * llm_graph_result::add_input(llm_graph_input_ptr input) {
