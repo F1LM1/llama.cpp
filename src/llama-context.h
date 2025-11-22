@@ -211,7 +211,7 @@ public:
     llm_graph_result * get_gf_res_reserve() const;
 
     // returns the result of ggml_backend_sched_graph_compute_async execution
-    ggml_status graph_compute(ggml_cgraph * gf, bool batched);
+    ggml_status graph_compute(ggml_cgraph * gf, bool batched, ggml_backend_sched_t custom_sched = nullptr);
 
     // reserve a graph with a dummy ubatch of the specified size
     ggml_cgraph * graph_reserve(uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx);
@@ -235,9 +235,7 @@ private:
 
     llm_graph_cb graph_get_cb(ggml_backend_sched * sched_override = nullptr) const;
 
-    // Methods for MTP decode     
-    std::unique_ptr<llama_memory_context_i> initialize_decode_context(const llama_batch & batch_inp, const bool output_all);
-
+    // Methods for MTP decode
     bool prepare_mtp_graph_inputs(
         llm_graph_result * res,
         const llama_ubatch & ubatch,
@@ -296,6 +294,8 @@ private:
     std::vector<swap_info> output_swaps;
 
     ggml_backend_sched_ptr sched;
+
+    ggml_backend_sched_ptr sched_mtp;
 
     ggml_backend_t backend_cpu = nullptr;
     std::vector<ggml_backend_ptr> backends;

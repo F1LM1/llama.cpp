@@ -378,7 +378,7 @@ llama_token mtp_speculative_gen_draft(
     const llama_seq_id draft_seq_id = 0;
     common_batch_add(mtp_batch, id_last, n_past, {0}, true);
 
-    mtp_batch.mtp_params.op_type = MTP_OP_DRAFT_GEN;
+    mtp_batch.mtp_params.op_type = MTP_OP_DRAFT_ONLY;
 
     // Perform the MTP draft generation decode. This writes the MTP layer's
     // KV state for the draft token into the cache.
@@ -406,58 +406,4 @@ llama_token mtp_speculative_gen_draft(
     common_sampler_apply_chain(smpl, cur_p);
     
     return cur_p->data[0].id;
-}
-
-
-void mtp_update_kv_cache(struct llama_context * ctx, const llama_batch& batch, bool is_prompt_warmup) {
-    if (batch.n_tokens == 0) {
-        return;
-    }
-
-    LOG_DBG("[MTP-UPDATE|%s] Updating %d tokens...\n", is_prompt_warmup ? "PROMPT_WARMUP" : "GEN_ACCEPTED", batch.n_tokens);
-
-    llama_batch mtp_batch = batch;
-    if (is_prompt_warmup) {
-        mtp_batch.mtp_params.op_type = MTP_OP_WARMUP;
-    } else {
-        mtp_batch.mtp_params.op_type = MTP_OP_UPDATE_ACCEPTED;
-    }
-
-    for (int i = 0; i < mtp_batch.n_tokens; ++i) {
-        mtp_batch.logits[i] = true;
-    }
-    const int64_t t_start_us = ggml_time_us();
-    llama_decode(ctx, mtp_batch);
-    const int64_t t_end_us = ggml_time_us();
-    LOG_INF("[PERF-MTP] mtp_update_kv_cache internal decode (op=%d): %.2f ms\n", (int)mtp_batch.mtp_params.op_type, (t_end_us - t_start_us) / 1000.0);
-}
-
-void mtp_accept_tokens(
-    struct llama_context * ctx,
-    const std::vector<llama_token> & ids,
-    int32_t n_past_base,
-    llama_seq_id seq_id
-) {
-    if (ids.empty()) {
-        return;
-    }
-
-    // Prepare a resized copy of the validation sinfo to match the number of accepted tokens.
-    //    This sets up the context for a "forced sinfo" decode.
-    if (!llama_mtp_prepare_sinfo_for_update(ctx, ids.size())) {
-        return;
-    }
-
-    // Build a new batch containing only the accepted tokens.
-    llama_batch accepted_batch = llama_batch_init(ids.size(), 0, 1);
-    for (size_t i = 0; i < ids.size(); ++i) {
-        common_batch_add(accepted_batch, ids[i], n_past_base + i, { seq_id }, true);
-    }
-
-    mtp_update_kv_cache(ctx, accepted_batch, false);
-
-    // Clean up the forced state to not affect subsequent, normal decode calls.
-    llama_mtp_cancel_sinfo_update(ctx);
-
-    llama_batch_free(accepted_batch);
 }

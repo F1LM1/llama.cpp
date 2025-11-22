@@ -3470,6 +3470,7 @@ struct server_context {
             };
 
             const int64_t t_prompt_main_start_us = ggml_time_us();
+            batch_view.mtp_params.op_type = MTP_OP_UNIFIED; // TODO: Apply only for when the model have mtp
             const int ret = llama_decode(ctx, batch_view);
             const int64_t t_prompt_main_end_us = ggml_time_us();
             LOG_INF("[PERF-PROMPT] Main model prompt processing: %.2f ms\n", (t_prompt_main_end_us - t_prompt_main_start_us) / 1000.0);
@@ -3513,24 +3514,6 @@ struct server_context {
                 continue; // continue loop of n_batch
             }
 
-            if (slot_batched && slot_batched->has_mtp &&
-                (slot_batched->state == SLOT_STATE_PROCESSING_PROMPT || slot_batched->state == SLOT_STATE_DONE_PROMPT)) {
-
-                // Prepare the context to reuse the exact sinfo layout (including multiple u-batches)
-                // from the main model's prompt processing pass. This ensures the MTP layer's
-                // KV cache is perfectly aligned.
-                if (llama_mtp_prepare_sinfo_for_warmup(ctx)) {
-                    const int64_t t_warmup_start_us = ggml_time_us();
-                    mtp_update_kv_cache(ctx, batch_view, true);
-                    const int64_t t_warmup_end_us = ggml_time_us();
-                    LOG_INF("[PERF-PROMPT] MTP warm-up: %.2f ms\n", (t_warmup_end_us - t_warmup_start_us) / 1000.0);
-                    // Clean up the forced state to not affect subsequent decodes.
-                    llama_mtp_cancel_sinfo_update(ctx);
-                } else {
-                    LOG_ERR("%s: Failed to prepare the MTP for warmup.", __func__);
-                }
-            }
-
             // move the head of the batch forward with the number of tokens we just processed
             i_next = i + n_tokens;
 
@@ -3565,10 +3548,7 @@ struct server_context {
                 }
 
                 const int tok_idx = slot.i_batch - i;
-                // Sets the initial state for the first draft generation.
-                if (slot.has_mtp) {
-                    llama_set_draft_input_hidden_state(ctx, llama_get_embeddings_ith(ctx, -1));
-                }
+
                 llama_token id = common_sampler_sample(slot.smpl, ctx, tok_idx);
                 slot.last_tok_idx = tok_idx;
 
@@ -3645,13 +3625,6 @@ struct server_context {
                 llama_tokens draft;
                 // const int64_t t_spec_start_us = ggml_time_us();
                 if (slot.has_mtp) {
-                    if (!slot.ids_prev_accepted.empty()) {
-                        LOG_INF("[MTP-FLOW] Updating KV cache with %zu tokens from the previous cycle.\n", slot.ids_prev_accepted.size());
-                        const int32_t n_past_base_update = slot.n_past - slot.ids_prev_accepted.size();
-                        mtp_accept_tokens(ctx, slot.ids_prev_accepted, n_past_base_update, slot.id);
-                        slot.ids_prev_accepted.clear();
-                    }
-
                     llama_set_draft_input_hidden_state(ctx, llama_get_embeddings_ith(ctx, -1));
 
                     LOG_INF("[MTP-FLOW] Generating a new draft from the token %d in the position %d.\n", id, slot.n_past);
@@ -3690,7 +3663,7 @@ struct server_context {
 
                 SLT_DBG(slot, "decoding speculative batch, size = %d\n", slot.batch_spec.n_tokens);
                 const int64_t t_valid_start_us = ggml_time_us();
-                // slot.batch_spec.mtp_params.op_type = MTP_OP_MAIN_VALIDATION;
+                slot.batch_spec.mtp_params.op_type = MTP_OP_UNIFIED;
                 llama_decode(ctx, slot.batch_spec);
                 const int64_t t_valid_end_us = ggml_time_us();
 

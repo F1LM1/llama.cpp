@@ -126,6 +126,8 @@ llama_context::llama_context(
     cparams.kv_unified = params.kv_unified;
 
     kv_cache_data = new llama_context_kv_cache_data();
+    auto * kvd = static_cast<llama_context_kv_cache_data *>(kv_cache_data);
+    kvd->gf_res_prev_validation = std::make_unique<llm_graph_result>(graph_max_nodes());
 
     {
         const char * LLAMA_SET_ROWS = getenv("LLAMA_SET_ROWS");
@@ -303,9 +305,10 @@ llama_context::llama_context(
         }
 
         sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, pipeline_parallel, cparams.op_offload));
+        sched_mtp.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, pipeline_parallel, cparams.op_offload));
 
         if (pipeline_parallel) {
-            LLAMA_LOG_INFO("%s: pipeline parallelism enabled (n_copies=%d)\n", __func__, ggml_backend_sched_get_n_copies(sched.get()));
+            LLAMA_LOG_INFO("%s: pipeline parallelism enabled (n_copies=%d)\n", __func__, ggml_backend_sched_get_n_copies(sched.get()), ggml_backend_sched_get_n_copies(sched_mtp.get()));
         }
     }
 
@@ -752,8 +755,7 @@ bool llama_context::apply_adapter_cvec(
     return cvec.apply(model, data, len, n_embd, il_start, il_end);
 }
 
-llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret,
-                                                const llama_mtp_params & mtp_params) {
+llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret, const llama_mtp_params & mtp_params) {
     if (mctx && !mctx->apply()) {
         LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
         ret = GGML_STATUS_FAILED;
@@ -761,116 +763,77 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     }
 
     auto * kvd = static_cast<llama_context_kv_cache_data *>(kv_cache_data);
-    llm_graph_result * res;
+    
+    ggml_backend_sched * current_sched = nullptr;
+    llm_graph_result * res = nullptr;
 
-    if (mtp_params.op_type != MTP_OP_NONE) {
+    if (mtp_params.op_type == MTP_OP_DRAFT_ONLY) {
+        current_sched = sched_mtp.get();
+
         int32_t n_outputs = 0;
         for (int i = 0; i < ubatch.n_tokens; ++i) { if (ubatch.output[i]) n_outputs++; }
-        const llama_graph_cache_key key = { ubatch.n_tokens, (uint32_t)n_outputs, mtp_params.op_type, cparams.causal_attn };
+        
+        const llama_graph_cache_key key = { 
+            (uint32_t)ubatch.n_tokens, 
+            (uint32_t)n_outputs, 
+            mtp_params.op_type,
+            cparams.causal_attn 
+        };
 
         auto & res_ptr = kvd->graph_cache[key];
         if (!res_ptr) {
-            LLAMA_LOG_INFO("[GRAPH-CACHE] Creating a new graph container for key (op=%d, tok=%d, out=%d)\n",
-                (int)key.op_type, key.n_tokens, key.n_outputs);
+            // LLAMA_LOG_INFO("[CACHE] New Entry: op=%d tokens=%d\n", key.op_type, key.n_tokens);
             res_ptr = std::make_unique<llm_graph_result>(graph_max_nodes());
         }
         res = res_ptr.get();
+        
+    } else {
+        current_sched = sched.get();
+        res = gf_res_prev.get();
+    }
 
-        // the new graph parameters
-        // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
-        const auto gparams = graph_params(res, ubatch, mctx, gtype, mtp_params);
+    const auto gparams = graph_params(res, ubatch, mctx, gtype, mtp_params);
+
+    bool structure_hit = !graph_reuse_disable && res->can_reuse(gparams);
+
+    if (structure_hit) {
+        LLAMA_LOG_INFO("[GRAPH-REUSE] HIT (op=%d)\n", mtp_params.op_type);
+        if (current_sched == sched.get()) {
+            ggml_backend_sched_reset(current_sched);
+            
+            if (!ggml_backend_sched_alloc_graph(current_sched, res->gf)) {
+                LLAMA_LOG_ERROR("%s: failed to allocate graph on reuse\n", __func__);
+                return nullptr;
+            }
+        }
         
-        // if (!graph_reuse_disable && res->can_reuse(gparams)) {
-        //LLAMA_LOG_DEBUG("%s: reusing previous graph\n", __func__);
-        //     LLAMA_LOG_INFO("[GRAPH-CACHE] HIT, reusing graph STRUCTURE for key (op=%d, tok=%d, out=%d)\n",
-        //         (int)key.op_type, key.n_tokens, key.n_outputs);
-        //     n_reused++;
-        // } else {
-        LLAMA_LOG_INFO("[GRAPH-CACHE] MISS, RECONSTRUCTING THE STRUCTURE of the graph for key (op=%d, tok=%d, out=%d)\n",
-            (int)key.op_type, key.n_tokens, key.n_outputs);
+        res->set_inputs(&ubatch); 
+
+    } else {
+        LLAMA_LOG_INFO("[GRAPH-REUSE] MISS (op=%d) - Rebuilding\n", mtp_params.op_type);  
         
-        const int64_t t_reset_start_us = ggml_time_us();
-        ggml_backend_sched_reset(sched.get());
-        const int64_t t_reset_end_us = ggml_time_us();
-        ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
+        ggml_backend_sched_reset(current_sched);
+        ggml_backend_sched_set_eval_callback(current_sched, cparams.cb_eval, cparams.cb_eval_user_data);
 
         res->reset();
         res->set_params(gparams);
-        const int64_t t_build_start_us = ggml_time_us();
         res->gf = model.build_graph(gparams);
-        const int64_t t_build_end_us = ggml_time_us();
-        LLAMA_LOG_INFO("[PERF-GRAPH] Graph build (op=%d): %.2f ms\n", (int)mtp_params.op_type, (t_build_end_us - t_build_start_us) / 1000.0);
 
-        if (!res->gf) {
-            LLAMA_LOG_ERROR("%s: failed to initialize graph\n", __func__);
-            ret = GGML_STATUS_FAILED;
-            return nullptr;
-        }
-
-        const int64_t t_alloc_start_us = ggml_time_us();
-        if (!ggml_backend_sched_alloc_graph(sched.get(), res->gf)) {
-            LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
-            ret = GGML_STATUS_ALLOC_FAILED;
-            return nullptr;
-        }
-        const int64_t t_alloc_end_us = ggml_time_us();
-            LLAMA_LOG_INFO("[PERF-GRAPH] sched_reset: %.2f ms | sched_alloc: %.2f ms (op=%d)\n",
-                (t_reset_end_us - t_reset_start_us) / 1000.0,
-                (t_alloc_end_us - t_alloc_start_us) / 1000.0,
-                (int)mtp_params.op_type);
-        // }
-
-    } else {
-        res = gf_res_prev.get();
-        const auto gparams = graph_params(res, ubatch, mctx, gtype, mtp_params);
-
-        if (!graph_reuse_disable && res->can_reuse(gparams)) {
-            LLAMA_LOG_INFO("%s: reusing previous graph\n", __func__);
-            n_reused++;
-        } else {
-            LLAMA_LOG_INFO("%s: RECONSTRUCTED graph...\n", __func__);
-
-            const int64_t t_reset_start_us = ggml_time_us();
-            ggml_backend_sched_reset(sched.get());
-            const int64_t t_reset_end_us = ggml_time_us();
-            ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
-
-            res->reset();
-            res->set_params(gparams);
-            //const auto t_start_us = ggml_time_us();
-
-            const int64_t t_build_start_us = ggml_time_us();
-            res->gf = model.build_graph(gparams);
-            const int64_t t_build_end_us = ggml_time_us();
-            LLAMA_LOG_INFO("[PERF-GRAPH] Graph build (op=%d): %.2f ms\n", (int)mtp_params.op_type, (t_build_end_us - t_build_start_us) / 1000.0);
-
-            //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
-
-            if (!res->gf) {
-                LLAMA_LOG_ERROR("%s: failed to initialize graph\n", __func__);
-                ret = GGML_STATUS_FAILED;
-                return nullptr;
-            }
-
-            const int64_t t_alloc_start_us = ggml_time_us();
-            if (!ggml_backend_sched_alloc_graph(sched.get(), res->gf)) {
-                LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
-                ret = GGML_STATUS_ALLOC_FAILED;
-                return nullptr;
-            }
-            const int64_t t_alloc_end_us = ggml_time_us();
-            LLAMA_LOG_INFO("[PERF-GRAPH] sched_reset: %.2f ms | sched_alloc: %.2f ms (op=%d)\n",
-                (t_reset_end_us - t_reset_start_us) / 1000.0,
-                (t_alloc_end_us - t_alloc_start_us) / 1000.0,
-                (int)mtp_params.op_type);
+        if (!ggml_backend_sched_alloc_graph(current_sched, res->gf)) {
+             return nullptr;
         }
     }
 
-    if (mtp_params.op_type != MTP_OP_NONE && mtp_params.op_type != MTP_OP_MAIN_VALIDATION) {
+    if (mtp_params.op_type == MTP_OP_DRAFT_ONLY) {
+        LLAMA_LOG_INFO("[MTP-DEBUG] Executing DRAFT_ONLY path.\n");
+
+        const int64_t t_inputs_start_us = ggml_time_us();
         if (!prepare_mtp_graph_inputs(res, ubatch, mtp_params)) {
             ret = GGML_STATUS_FAILED;
             return nullptr;
         }
+        const int64_t t_inputs_end_us = ggml_time_us();
+        LLAMA_LOG_INFO("[PERF-MTP] DRAFT_ONLY input setup: %.2f ms\n", (t_inputs_end_us - t_inputs_start_us) / 1000.0);
     }
 
     // set the input data for the input tensors
@@ -882,7 +845,10 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
     }
 
-    const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
+    const int64_t t_compute_start_us = ggml_time_us();
+    auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1, current_sched);
+    const int64_t t_compute_end_us = ggml_time_us();
+    LLAMA_LOG_INFO("[PERF-MTP] DRAFT_ONLY graph compute: %.2f ms\n", (t_compute_end_us - t_compute_start_us) / 1000.0);
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
         ret = status;
@@ -890,9 +856,6 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     }
 
     ret = GGML_STATUS_SUCCESS;
-    if (mtp_params.op_type == MTP_OP_UPDATE_ACCEPTED) {
-        ggml_tensor * sum_tensor = ggml_get_tensor(res->get_ctx(), "mtp_input_sum");
-    }
     return res;
 }
 
@@ -1123,10 +1086,10 @@ int llama_context::decode(const llama_batch & batch_inp) {
     // handle any pending defrags/shifts
     kv_self_update(false);
 
-    std::unique_ptr<llama_memory_context_i> mctx;
+    llama_memory_context_ptr mctx;
 
     while (true) {
-        mctx = this->initialize_decode_context(batch_inp, output_all);
+        mctx = memory->init_batch(*balloc, cparams.n_ubatch, output_all);
 
         if (!mctx) {
             return -2;
@@ -1238,34 +1201,29 @@ int llama_context::decode(const llama_batch & batch_inp) {
             t_embd = res->get_embd_pooled();
         }
 
+        ggml_backend_sched_t active_sched = sched.get();
+        if (batch_inp.mtp_params.op_type == MTP_OP_DRAFT_ONLY) {
+                active_sched = sched_mtp.get();
+            }
         // extract logits
         if (t_logits && n_outputs > 0) {
-            // MTP operations that are purely for updating the KV cache
-            // (MTP_OP_WARMUP and MTP_OP_UPDATE_ACCEPTED) also produce a logit tensor
-            // as a side effect of running the graph. If these logits are copied
-            // back to the main context buffer, they will overwrite the valid logits
-            // produced by the main model's pass, leading to incorrect sampling.
-            // This condition explicitly prevents that copy for cache-only operations.
-            if (batch_inp.mtp_params.op_type != MTP_OP_WARMUP &&
-                batch_inp.mtp_params.op_type != MTP_OP_UPDATE_ACCEPTED) {
-                ggml_backend_t backend_res = ggml_backend_sched_get_tensor_backend(sched.get(), t_logits);
-                GGML_ASSERT(backend_res != nullptr);
-                GGML_ASSERT(logits != nullptr);
+            ggml_backend_t backend_res = ggml_backend_sched_get_tensor_backend(active_sched, t_logits);
+            GGML_ASSERT(backend_res != nullptr);
+            GGML_ASSERT(logits != nullptr);
 
-                float * logits_out = logits + n_outputs_prev*n_vocab;
+            float * logits_out = logits + n_outputs_prev*n_vocab;
 
-                if (n_outputs) {
-                    GGML_ASSERT( n_outputs_prev + n_outputs <= n_outputs_all);
-                    GGML_ASSERT((n_outputs_prev + n_outputs)*n_vocab <= (int64_t) logits_size);
-                    ggml_backend_tensor_get_async(backend_res, t_logits, logits_out, 0, n_outputs*n_vocab*sizeof(float));
-                }
+            if (n_outputs) {
+                GGML_ASSERT( n_outputs_prev + n_outputs <= n_outputs_all);
+                GGML_ASSERT((n_outputs_prev + n_outputs)*n_vocab <= (int64_t) logits_size);
+                ggml_backend_tensor_get_async(backend_res, t_logits, logits_out, 0, n_outputs*n_vocab*sizeof(float));
             }
         }
 
         // extract embeddings
         if (t_embd && n_outputs > 0) {
-            if (batch_inp.mtp_params.op_type == MTP_OP_NONE || batch_inp.mtp_params.op_type == MTP_OP_MAIN_VALIDATION) {
-                ggml_backend_t backend_embd = ggml_backend_sched_get_tensor_backend(sched.get(), t_embd);
+            if (batch_inp.mtp_params.op_type == MTP_OP_NONE || batch_inp.mtp_params.op_type == MTP_OP_UNIFIED) {
+                ggml_backend_t backend_embd = ggml_backend_sched_get_tensor_backend(active_sched, t_embd);
                 GGML_ASSERT(backend_embd != nullptr);
 
                 switch (cparams.pooling_type) {
@@ -1503,6 +1461,9 @@ ggml_cgraph * llama_context::graph_reserve(uint32_t n_tokens, uint32_t n_seqs, u
     }
 
     ggml_backend_sched_reset(sched.get());
+    if (sched_mtp) {
+        ggml_backend_sched_reset(sched_mtp.get());
+    }
 
     // when the scheduler is reset, we cannnot reuse the old graph, so we reset the previous graph result to prevent that
     gf_res_prev->reset();
@@ -1575,9 +1536,7 @@ std::unique_ptr<llama_memory_context_i> llama_context::mtp_memory_batch(const ll
     return memory->init_batch(*balloc, 1, false);
 }
 
-ggml_status llama_context::graph_compute(
-            ggml_cgraph * gf,
-                   bool   batched) {
+ggml_status llama_context::graph_compute(ggml_cgraph * gf, bool batched, ggml_backend_sched_t custom_sched) {
     int n_threads        = batched ? cparams.n_threads_batch : cparams.n_threads;
     ggml_threadpool_t tp = batched ? threadpool_batch        : threadpool;
 
@@ -1592,7 +1551,9 @@ ggml_status llama_context::graph_compute(
         set_n_threads_fn.second(set_n_threads_fn.first, n_threads);
     }
 
-    auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
+    ggml_backend_sched_t target = custom_sched ? custom_sched : sched.get();
+    
+    auto status = ggml_backend_sched_graph_compute_async(target, gf);
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
     }
@@ -3087,43 +3048,6 @@ void llama_set_draft_input_hidden_state(struct llama_context * ctx, const float 
     ctx->draft_input_hidden_state = hidden_state;
 }
 
-bool llama_mtp_prepare_sinfo_for_warmup(struct llama_context * ctx) {
-    auto * kvd = static_cast<llama_context_kv_cache_data *>(ctx->kv_cache_data);
-    const auto & last_sinfo = kvd->last_main_model_sinfos;
-
-    if (last_sinfo.empty()) {
-        LLAMA_LOG_ERROR("%s: The main call sinfo is not available for warmup.\n", __func__);
-        return false;
-    }
-
-    kvd->forced_sinfos = &last_sinfo;
-    return true;
-}
-
-
-bool llama_mtp_prepare_sinfo_for_update(struct llama_context * ctx, size_t n_accepted) {
-    auto * kvd = static_cast<llama_context_kv_cache_data *>(ctx->kv_cache_data);
-    const auto & last_sinfo = kvd->last_main_model_sinfos;
-
-    if (last_sinfo.empty() || last_sinfo[0].idxs.empty()) {
-        LLAMA_LOG_ERROR("%s: The sinfo for the last main call is not available.", __func__);
-        return false;
-    }
-
-    kvd->resized_sinfo_for_force = last_sinfo;
-    
-    kvd->resized_sinfo_for_force[0].idxs[0].resize(n_accepted);
-
-    kvd->forced_sinfos = &kvd->resized_sinfo_for_force;
-
-    return true;
-}
-
-void llama_mtp_cancel_sinfo_update(struct llama_context * ctx) {
-    auto * kvd = static_cast<llama_context_kv_cache_data *>(ctx->kv_cache_data);
-    kvd->forced_sinfos = nullptr;
-}
-
 void llama_context::kv_cache_seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
     if (memory) {
         static_cast<llama_kv_cache_unified *>(memory.get())->seq_rm(seq_id, p0, p1);
@@ -3134,70 +3058,29 @@ void llama_kv_cache_seq_rm(struct llama_context * ctx, llama_seq_id seq_id, llam
     ctx->kv_cache_seq_rm(seq_id, p0, p1);
 }
 
-/*
-    Initializes the memory context for a decode operation.
-    The logic follows a specific priority:
-    1. Warmup: Always use a standard batch initialization.
-    2. Forced S-Info (MTP Updates): If a specific KV cache layout is forced, use it.
-    3. Default: Use a standard batch initialization, and if it's a main model pass,
-       save the resulting s-info for potential future reuse by MTP.
-*/
-std::unique_ptr<llama_memory_context_i> llama_context::initialize_decode_context(const llama_batch & batch_inp, const bool output_all) {
-    auto * kvd = static_cast<llama_context_kv_cache_data *>(kv_cache_data);
-    std::unique_ptr<llama_memory_context_i> mctx;
-
-    if (cparams.warmup) {
-        mctx = memory->init_batch(*balloc, cparams.n_ubatch, output_all);
-    } else if (kvd->forced_sinfos && !kvd->forced_sinfos->empty()) {
-        LLAMA_LOG_DEBUG("%s: Forcing sinfos, bypassing find_slot.\n", __func__);
-        mctx = static_cast<llama_kv_cache_unified *>(memory.get())->init_batch_with_sinfos(
-            *balloc, cparams.n_ubatch, *kvd->forced_sinfos, true
-        );
-    } else {
-        mctx = memory->init_batch(*balloc, cparams.n_ubatch, output_all);
-
-        if (batch_inp.mtp_params.op_type == MTP_OP_NONE || batch_inp.mtp_params.op_type == MTP_OP_MAIN_VALIDATION) {
-            if (mctx && mctx->get_status() == LLAMA_MEMORY_STATUS_SUCCESS) {
-                kvd->last_main_model_sinfos = static_cast<llama_kv_cache_unified_context *>(mctx.get())->get_sinfos();
-            } else {
-                kvd->last_main_model_sinfos.clear();
-            }
-        }
-    }
-    
-    return mctx;
-}
-
-
 bool llama_context::prepare_mtp_graph_inputs(
     llm_graph_result * res,
     const llama_ubatch & ubatch,
     const llama_mtp_params & mtp_params) {
     
-    const char * target_tensor_name = "result_embd_pooled";
-    ggml_tensor* hidden_states_input = ggml_get_tensor(res->get_ctx(), target_tensor_name);
-
-    const float * source_hidden_state = nullptr;
-    if (mtp_params.op_type == MTP_OP_WARMUP || mtp_params.op_type == MTP_OP_UPDATE_ACCEPTED) {
-        source_hidden_state = this->embd;
-    } else { // MTP_OP_DRAFT_GEN
-        source_hidden_state = this->draft_input_hidden_state;
+    // We only need to inject hidden states manually for the DRAFT_ONLY path.
+    if (mtp_params.op_type != MTP_OP_DRAFT_ONLY) {
+        return true;
     }
 
-    if (source_hidden_state != nullptr && hidden_states_input != nullptr) {
-        const char * op_type;
-        if (mtp_params.op_type == MTP_OP_WARMUP || mtp_params.op_type == MTP_OP_UPDATE_ACCEPTED) {
-            op_type = "MTP_UPDATE";
-        } else { // MTP_OP_DRAFT_GEN
-            op_type = "DRAFT_GEN";
-        }
-
-        ggml_backend_tensor_set(hidden_states_input, source_hidden_state, 0, ggml_nbytes(hidden_states_input));
-    } else {
-        LLAMA_LOG_ERROR("%s: MTP hidden state input tensor ('%s') not found or main embd buffer is null\n",
-            __func__, target_tensor_name);
+    struct ggml_tensor * inp_mtp = ggml_graph_get_tensor(res->gf, "mtp_draft_hidden_state");
+    if (!inp_mtp) {
+        LLAMA_LOG_ERROR("MTP input tensor not found in graph\n");
         return false;
     }
+
+    const float * src_data = this->draft_input_hidden_state;
+    if (!src_data) {
+        LLAMA_LOG_ERROR("%s: Source hidden state data is NULL (draft_input_hidden_state)\n", __func__);
+        return false;
+    }
+
+    ggml_backend_tensor_set(inp_mtp, src_data, 0, ggml_nbytes(inp_mtp));
 
     return true;
 }
