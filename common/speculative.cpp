@@ -374,7 +374,6 @@ llama_token mtp_speculative_gen_draft(
         return -1;
     }
     llama_batch mtp_batch = llama_batch_init(1, 0, 1);
-    const llama_pos draft_pos = n_past;
     const llama_seq_id draft_seq_id = 0;
     common_batch_add(mtp_batch, id_last, n_past, {0}, true);
 
@@ -382,23 +381,30 @@ llama_token mtp_speculative_gen_draft(
 
     // Perform the MTP draft generation decode. This writes the MTP layer's
     // KV state for the draft token into the cache.
-    llama_decode(ctx, mtp_batch);
+    if (llama_decode(ctx, mtp_batch) != 0) {
+        llama_batch_free(mtp_batch);
+        return -1;
+    }
     llama_batch_free(mtp_batch);
 
     // CRITICAL: Purge the metadata for the draft token we just wrote.
     // This makes the physical cell available again for the main model's validation pass,
     // preventing a cache state corruption where two cells map to the same logical position.
-    llama_kv_cache_seq_rm(ctx, draft_seq_id, draft_pos, draft_pos + 1);
+    llama_kv_cache_seq_rm(ctx, draft_seq_id, n_past, n_past + 1);
 
     const llama_model * model = llama_get_model(ctx);
     const llama_vocab * vocab = llama_model_get_vocab(model);
     const int n_vocab = llama_n_vocab(vocab);
+
     llama_token_data_array * cur_p = common_sampler_get_candidates(smpl);
+    float * logits = llama_get_logits_ith(ctx, 0);
     cur_p->size = n_vocab;
+
     for (int i = 0; i < n_vocab; ++i) {
         cur_p->data[i].id = i;
-        cur_p->data[i].logit = llama_get_logits_ith(ctx, 0)[i]; // For a single-token batch, logits are always at index 0.
+        cur_p->data[i].logit = logits[i];
     }
+
     cur_p->sorted = false;
     common_sampler_apply_chain(smpl, cur_p);
     
