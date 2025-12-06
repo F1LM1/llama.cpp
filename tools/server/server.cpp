@@ -2133,7 +2133,7 @@ struct server_context {
             }
 
             // if model has MTP and no draft model is specified...
-            else if (llama_model_n_nextn_layer(model) > 0) {
+            else if (llama_model_n_nextn_layer(model) > 0 && params_base.mtp) {
                 SRV_INF("model has nextn layers = %d\n", llama_model_n_nextn_layer(model));
                 slot.has_mtp = true;
 
