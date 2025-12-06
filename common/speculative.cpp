@@ -367,14 +367,13 @@ llama_token mtp_speculative_gen_draft(
     struct common_sampler* smpl,
     struct llama_context* ctx,
     llama_token id_last,
-    int32_t n_past,
-    int32_t last_tok_idx) {
+    int32_t n_past) {
 
-    if (!smpl) {
-        return -1;
-    }
+    if (!smpl) return -1;
+
     llama_batch mtp_batch = llama_batch_init(1, 0, 1);
     const llama_seq_id draft_seq_id = 0;
+
     common_batch_add(mtp_batch, id_last, n_past, {0}, true);
 
     mtp_batch.mtp_params.op_type = MTP_OP_DRAFT_GEN;
@@ -392,23 +391,7 @@ llama_token mtp_speculative_gen_draft(
     // preventing a cache state corruption where two cells map to the same logical position.
     llama_kv_cache_seq_rm(ctx, draft_seq_id, n_past, n_past + 1);
 
-    const llama_model * model = llama_get_model(ctx);
-    const llama_vocab * vocab = llama_model_get_vocab(model);
-    const int n_vocab = llama_n_vocab(vocab);
-
-    llama_token_data_array * cur_p = common_sampler_get_candidates(smpl);
-    float * logits = llama_get_logits_ith(ctx, 0);
-    cur_p->size = n_vocab;
-
-    for (int i = 0; i < n_vocab; ++i) {
-        cur_p->data[i].id = i;
-        cur_p->data[i].logit = logits[i];
-    }
-
-    cur_p->sorted = false;
-    common_sampler_apply_chain(smpl, cur_p);
-    
-    return cur_p->data[0].id;
+    return common_sampler_sample_speculative(smpl, ctx, 0);
 }
 
 

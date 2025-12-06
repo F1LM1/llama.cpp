@@ -39,8 +39,7 @@ llama_token mtp_speculative_gen_draft(
     struct common_sampler* smpl,
     struct llama_context* ctx,
     llama_token id_last,
-    int32_t n_past,
-    int32_t last_tok_idx);
+    int32_t n_past);
 
 // sample up to n_draft tokens and add them to the batch using the draft model
 llama_tokens common_speculative_gen_draft(

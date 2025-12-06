@@ -3632,7 +3632,7 @@ struct server_context {
 
                 llama_tokens draft;
                 if (slot.has_mtp) {
-                    llama_token draft_id = mtp_speculative_gen_draft(slot.smpl, ctx, id, slot.n_past, slot.last_tok_idx);
+                    llama_token draft_id = mtp_speculative_gen_draft(slot.smpl, ctx, id, slot.n_past);
                     draft.reserve(1);
                     draft.push_back(draft_id);
                 }
