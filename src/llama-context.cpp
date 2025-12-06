@@ -546,18 +546,6 @@ float * llama_context::get_logits() {
     return logits;
 }
 
-void llama_context::set_logits_ith(struct ggml_tensor * logit_override, ggml_backend_sched_t sched_override, int32_t i) {
-    output_reorder();
-
-    ggml_backend_t backend_res = ggml_backend_sched_get_tensor_backend(sched_override, logit_override);
-    GGML_ASSERT(backend_res != nullptr);
-    GGML_ASSERT(logits != nullptr);
-
-    int64_t j = output_ids[i];
-
-    ggml_backend_tensor_get_async(backend_res, logit_override, logits + j*model.vocab.n_tokens(), 0, model.vocab.n_tokens() * sizeof(float));
-}
-
 float * llama_context::get_logits_ith(int32_t i) {
     int64_t j = -1;
 
@@ -769,8 +757,8 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
         auto & res_ptr = kvd->graph_cache[key];
         if (!res_ptr) {
-            LLAMA_LOG_INFO("[GRAPH-CACHE] Creating a new graph container for key (op=%d, tok=%d, out=%d)\n",
-                (int)key.op_type, key.n_tokens, key.n_outputs);
+            LLAMA_LOG_DEBUG("%s:  Creating a new graph container for key (op=%d, tok=%d, out=%d)\n",
+                __func__, (int)key.op_type, key.n_tokens, key.n_outputs);
             res_ptr = std::make_unique<llm_graph_result>(graph_max_nodes());
         }
         res = res_ptr.get();
@@ -778,15 +766,6 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         // the new graph parameters
         // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
         const auto gparams = graph_params(res, ubatch, mctx, gtype, mtp_params);
-        
-        // if (!graph_reuse_disable && res->can_reuse(gparams)) {
-        //LLAMA_LOG_DEBUG("%s: reusing previous graph\n", __func__);
-        //     LLAMA_LOG_INFO("[GRAPH-CACHE] HIT, reusing graph STRUCTURE for key (op=%d, tok=%d, out=%d)\n",
-        //         (int)key.op_type, key.n_tokens, key.n_outputs);
-        //     n_reused++;
-        // } else {
-        LLAMA_LOG_INFO("[GRAPH-CACHE] MISS, RECONSTRUCTING THE STRUCTURE of the graph for key (op=%d, tok=%d, out=%d)\n",
-            (int)key.op_type, key.n_tokens, key.n_outputs);
         
         ggml_backend_sched_reset(sched.get());
         ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
@@ -806,17 +785,16 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             ret = GGML_STATUS_ALLOC_FAILED;
             return nullptr;
         }
-        // }
 
     } else {
         res = gf_res_prev.get();
         const auto gparams = graph_params(res, ubatch, mctx, gtype, mtp_params);
 
         if (!graph_reuse_disable && res->can_reuse(gparams)) {
-            LLAMA_LOG_INFO("%s: reusing previous graph\n", __func__);
+            LLAMA_LOG_DEBUG("%s: Reusing previous graph\n", __func__);
             n_reused++;
         } else {
-            LLAMA_LOG_INFO("%s: RECONSTRUCTED graph...\n", __func__);
+            LLAMA_LOG_DEBUG("%s: Reconstructed graph...\n", __func__);
 
             ggml_backend_sched_reset(sched.get());
             ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
@@ -867,9 +845,6 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     }
 
     ret = GGML_STATUS_SUCCESS;
-    if (mtp_params.op_type == MTP_OP_UPDATE_ACCEPTED) {
-        ggml_tensor * sum_tensor = ggml_get_tensor(res->get_ctx(), "mtp_input_sum");
-    }
     return res;
 }
 

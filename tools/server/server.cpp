@@ -1404,14 +1404,10 @@ struct server_slot {
     // if the context does not have a memory module then all embeddings have to be computed within a single ubatch
     // also we cannot split if the pooling would require any past tokens
     bool can_split() const {
-        //fprintf(stderr, "need_embd()            %d\n", need_embd());
-        //fprintf(stderr, "llama_get_memory(ctx)  %d\n", llama_get_memory(ctx) != nullptr);
-        //fprintf(stderr, "POOLING_TYPE check     %d\n", llama_pooling_type(ctx) == LLAMA_POOLING_TYPE_LAST);
-
         return
             !need_embd() ||
             (llama_get_memory(ctx) && llama_pooling_type(ctx) == LLAMA_POOLING_TYPE_LAST) ||
-            (llama_get_memory(ctx) && llama_pooling_type(ctx) == LLAMA_POOLING_TYPE_NONE);    // this seems to save embeddings for whole batch?
+            (llama_get_memory(ctx) && llama_pooling_type(ctx) == LLAMA_POOLING_TYPE_NONE);
     }
 
     bool can_batch_with(server_slot & other_slot) const {
@@ -1440,7 +1436,6 @@ struct server_slot {
 
     bool can_speculate() const {
         return (ctx_dft || has_mtp) && params.speculative.n_max > 0 && params.cache_prompt;
-        // return (ctx_dft) && params.speculative.n_max > 0 && params.cache_prompt;
     }
 
     void add_token(const completion_token_output & token) {
