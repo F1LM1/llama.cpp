@@ -18,7 +18,6 @@
 //
 // llama_context
 //
-// Key for the graph cache. It contains all parameters that define the graph topology.
 
 struct llama_context_kv_cache_data {
     llama_kv_cache::slot_info_vec_t last_main_model_sinfos;
@@ -1242,12 +1241,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
         // extract logits
         if (t_logits && n_outputs > 0) {
-            // MTP operations that are purely for updating the KV cache
-            // (MTP_OP_WARMUP and MTP_OP_UPDATE_ACCEPTED) also produce a logit tensor
-            // as a side effect of running the graph. If these logits are copied
-            // back to the main context buffer, they will overwrite the valid logits
-            // produced by the main model's pass, leading to incorrect sampling.
-            // This condition explicitly prevents that copy for cache-only operations.
+            // Do not process logits if MTP is only updating the KV cache.
             if (batch_inp.mtp_params.op_type != MTP_OP_WARMUP &&
                 batch_inp.mtp_params.op_type != MTP_OP_UPDATE_ACCEPTED) {
                 ggml_backend_t backend_res = ggml_backend_sched_get_tensor_backend(sched.get(), t_logits);
@@ -3167,14 +3161,7 @@ void llama_kv_cache_seq_rm(struct llama_context * ctx, llama_seq_id seq_id, llam
     ctx->kv_cache_seq_rm(seq_id, p0, p1);
 }
 
-/*
-    Initializes the memory context for a decode operation.
-    The logic follows a specific priority:
-    1. Warmup: Always use a standard batch initialization.
-    2. Forced S-Info (MTP Updates): If a specific KV cache layout is forced, use it.
-    3. Default: Use a standard batch initialization, and if it's a main model pass,
-       save the resulting s-info for potential future reuse by MTP.
-*/
+// Select the proper slot_info for the decode based on the operation type.
 std::unique_ptr<llama_memory_context_i> llama_context::initialize_decode_context(const llama_batch & batch_inp, const bool output_all) {
     auto * kvd = static_cast<llama_context_kv_cache_data *>(kv_cache_data);
     std::unique_ptr<llama_memory_context_i> mctx;

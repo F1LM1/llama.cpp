@@ -1721,11 +1721,9 @@ void llama_model::load_hparams(llama_model_loader & ml) {
                 ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS,        hparams.nextn_predict_layers, false);
 
                 if (params.mtp) {
-                    // Include MTP layers in KV cache if MTP is enabled
                     hparams.n_layer_kv_from_start = hparams.n_layer;
                 }
                 else {
-                    // Otherwise exclude to save memory
                     hparams.n_layer_kv_from_start = hparams.n_layer - hparams.nextn_predict_layers;
                 }
                 switch (hparams.n_layer) {

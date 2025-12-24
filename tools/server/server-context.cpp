@@ -2622,12 +2622,9 @@ struct server_context_impl {
             if (slot_batched && slot_batched->has_mtp &&
                 (slot_batched->state == SLOT_STATE_PROCESSING_PROMPT || slot_batched->state == SLOT_STATE_DONE_PROMPT)) {
 
-                // Prepare the context to reuse the exact sinfo layout (including multiple u-batches)
-                // from the main model's prompt processing pass. This ensures the MTP layer's
-                // KV cache is perfectly aligned.
+                // Reuse the slot_info from the main model's prompt processing pass.
                 if (llama_mtp_prepare_sinfo_for_warmup(ctx)) {
                     mtp_update_kv_cache(ctx, batch_view, true);
-                    // Clean up the forced state to not affect subsequent decodes.
                     llama_mtp_cancel_sinfo_update(ctx);
                 } else {
                     LOG_ERR("%s: Failed to prepare the MTP for warmup.", __func__);
