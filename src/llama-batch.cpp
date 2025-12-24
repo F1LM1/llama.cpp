@@ -297,14 +297,14 @@ bool llama_batch_allocr::init(
             if (p0 >= 0) {
                 bool ok = true;
 
-                if (seq_pos_min(s) != p0 + 1) {
-                    ok = false;
-                }
-
                 // MTP Update kv-cache reuse the same position from before.
                 if (batch.mtp_params.op_type == MTP_OP_WARMUP) {
-                    if (seq_pos_min(s) <= p0 + 1) { 
-                        ok = true; 
+                    if (seq_pos_min(s) > p0 + 1) {
+                        ok = false;
+                    }
+                } else {
+                    if (seq_pos_min(s) != p0 + 1) {
+                        ok = false;
                     }
                 }
 
