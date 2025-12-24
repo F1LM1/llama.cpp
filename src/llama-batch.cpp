@@ -869,13 +869,14 @@ struct llama_batch llama_batch_get_one(
              llama_token * tokens,
                  int32_t   n_tokens) {
     return {
-        /*n_tokens =*/ n_tokens,
-        /*tokens   =*/ tokens,
-        /*embd     =*/ nullptr,
-        /*pos      =*/ nullptr,
-        /*n_seq_id =*/ nullptr,
-        /*seq_id   =*/ nullptr,
-        /*logits   =*/ nullptr,
+        /*n_tokens    =*/ n_tokens,
+        /*tokens      =*/ tokens,
+        /*embd        =*/ nullptr,
+        /*pos         =*/ nullptr,
+        /*n_seq_id    =*/ nullptr,
+        /*seq_id      =*/ nullptr,
+        /*logits      =*/ nullptr,
+        /*.mtp_params =*/ { MTP_OP_NONE },
     };
 }
 

@@ -866,7 +866,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     }
 
     if (mtp_params.op_type != MTP_OP_NONE) { // If it is any MTP operation
-        if (!prepare_mtp_graph_inputs(res, ubatch, mtp_params)) {
+        if (!prepare_mtp_graph_inputs(res, mtp_params)) {
             ret = GGML_STATUS_FAILED;
             return nullptr;
         }
@@ -1568,7 +1568,6 @@ std::unique_ptr<llama_memory_context_i> llama_context::mtp_memory_batch(const ll
     const auto& vocab = model.vocab;
     const auto& hparams = model.hparams;
 
-    const int64_t n_vocab = vocab.n_tokens();
     const int64_t n_embd = hparams.n_embd;
 
     if (!balloc->init(batch_inp, vocab, memory.get(), n_embd, cparams.kv_unified ? LLAMA_MAX_SEQ : cparams.n_seq_max, false)) {
@@ -3191,7 +3190,6 @@ std::unique_ptr<llama_memory_context_i> llama_context::initialize_decode_context
 
 bool llama_context::prepare_mtp_graph_inputs(
     llm_graph_result * res,
-    const llama_ubatch & ubatch,
     const llama_mtp_params & mtp_params) {
     
     const char * target_tensor_name = "result_embd_pooled";
@@ -3205,13 +3203,6 @@ bool llama_context::prepare_mtp_graph_inputs(
     }
 
     if (source_hidden_state != nullptr && hidden_states_input != nullptr) {
-        const char * op_type;
-        if (mtp_params.op_type == MTP_OP_WARMUP || mtp_params.op_type == MTP_OP_UPDATE_ACCEPTED) {
-            op_type = "MTP_UPDATE";
-        } else { // MTP_OP_DRAFT_GEN
-            op_type = "DRAFT_GEN";
-        }
-
         ggml_backend_tensor_set(hidden_states_input, source_hidden_state, 0, ggml_nbytes(hidden_states_input));
     } else {
         LLAMA_LOG_ERROR("%s: MTP hidden state input tensor ('%s') not found or main embd buffer is null\n",

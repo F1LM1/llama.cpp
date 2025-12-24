@@ -238,7 +238,6 @@ private:
 
     bool prepare_mtp_graph_inputs(
         llm_graph_result * res,
-        const llama_ubatch & ubatch,
         const llama_mtp_params & mtp_params);
 
     std::unique_ptr<struct llama_memory_context_i> mtp_memory_batch(const llama_batch & batch_inp);
