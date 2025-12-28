@@ -385,15 +385,24 @@ llama_tokens mtp_speculative_gen_draft(
         mtp_batch.n_tokens = 0;
         common_batch_add(mtp_batch, current_input_id, current_n_past, {seq_id}, true);
 
-        // Perform the MTP draft generation decode. This writes the MTP layer's
-        // KV state for the draft token into the cache.
         if (llama_decode(ctx, mtp_batch) != 0) {
             break;
         }
 
-        llama_token id_next = common_sampler_sample_speculative(smpl, ctx, 0);
+        float * logits = llama_get_logits_ith(ctx, 0);
+        const int n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(llama_get_model(ctx)));
 
-        // Drafting stops if token probability drops below `p_min` to save compute.
+        int id_next = 0;
+        float max_val = logits[0];
+
+        for (int i = 1; i < n_vocab; ++i) {
+            if (logits[i] > max_val) {
+                max_val = logits[i];
+                id_next = i;
+            }
+        }
+
+        // Only collect very high-confidence draft tokens
         const auto * cur_p = common_sampler_get_candidates(smpl, true);
         if (cur_p && cur_p->size > 0) {
             float prob = cur_p->data[0].p;
@@ -412,9 +421,8 @@ llama_tokens mtp_speculative_gen_draft(
     }
     llama_batch_free(mtp_batch);
 
-    // CRITICAL: Purge the metadata for the draft token we just wrote.
-    // This makes the physical cell available again for the main model's validation pass,
-    // preventing a cache state corruption where two cells map to the same logical position.
+    // Purge the metadata for the draft tokens.
+    // This prevents cache state corruption where two cells map to the same logical position.
     if (!drafts.empty()) {
         llama_kv_cache_seq_rm(ctx, seq_id, n_past, current_n_past);
     }
@@ -453,13 +461,10 @@ void mtp_accept_tokens(
         return;
     }
 
-    // Prepare a resized copy of the validation sinfo to match the number of accepted tokens.
-    //    This sets up the context for a "forced sinfo" decode.
     if (!llama_mtp_prepare_sinfo_for_update(ctx, ids.size())) {
         return;
     }
 
-    // Build a new batch containing only the accepted tokens.
     llama_batch accepted_batch = llama_batch_init(ids.size(), 0, 1);
     for (size_t i = 0; i < ids.size(); ++i) {
         common_batch_add(accepted_batch, ids[i], n_past_base + i, { seq_id }, true);

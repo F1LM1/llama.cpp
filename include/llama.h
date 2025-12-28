@@ -1463,30 +1463,14 @@ extern "C" {
 
     LLAMA_API void llama_set_draft_input_hidden_state(struct llama_context * ctx, const float * hidden_state);
 
-    /**
-     * @brief Prepares the context for an MTP KV cache update by creating a resized copy of the last sinfo.
-     *        This is used after speculative validation when only a subset of draft tokens are accepted.
-     * @param n_accepted The number of tokens that were accepted and for which the sinfo should be resized.
-     * @return true on success.
-     */
+    // Prepares the context for an MTP KV cache update.
     LLAMA_API bool llama_mtp_prepare_sinfo_for_update(struct llama_context * ctx, size_t n_accepted);
-    
-    /**
-     * @brief Prepares the context for an MTP KV cache update by reusing the sinfo from the last main model decode.
-     *        This is used for the prompt warmup to ensure the MTP and main model KV caches are perfectly aligned.
-     * @return true on success.
-     */
     LLAMA_API bool llama_mtp_prepare_sinfo_for_warmup(struct llama_context * ctx);
     
-    /**
-     * @brief Clears the forced sinfo state from the context. Must be called after a decode that used a prepared sinfo.
-     */
+    // Clears the forced sinfo state from the context.
     LLAMA_API void llama_mtp_cancel_sinfo_update(struct llama_context * ctx);
 
-    /**
-     * @brief Removes KV cache metadata for a specified sequence and token range.
-     *        This makes the physical cells logically available again without deleting the tensor data.
-     */
+    // Removes KV cache metadata for a specified sequence and token range.
     LLAMA_API void llama_kv_cache_seq_rm(struct llama_context * ctx, llama_seq_id seq_id, llama_pos p0, llama_pos p1);
 
 #ifdef __cplusplus

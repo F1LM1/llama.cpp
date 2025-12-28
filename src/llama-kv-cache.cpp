@@ -916,31 +916,12 @@ llama_kv_cache::slot_info llama_kv_cache::find_slot(const llama_ubatch & ubatch,
     }
 
     assert(res.s1 >= res.s0);
-    if (!res.empty()) {
-        std::string idxs_str;
-        for (const auto& vec : res.idxs) {
-            if (!vec.empty()) {
-                if (vec.size() > 8) {
-                     idxs_str += " [" + std::to_string(vec.front()) + "..." + std::to_string(vec.back()) + " (" + std::to_string(vec.size()) + " cells)]";
-                } else {
-                     idxs_str += " [";
-                     for(size_t i = 0; i < vec.size(); ++i) {
-                         idxs_str += std::to_string(vec[i]) + (i == vec.size() - 1 ? "" : ", ");
-                     }
-                     idxs_str += "]";
-                }
-            }
-        }
-    }
 
     return res;
 }
 
 void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch & ubatch, bool is_inplace_update) {
-    // For "in-place" updates (MTP warmup/accept), we only update the tensor data.
-    // The cell metadata (logical position, sequence ID) has already been set
-    // by the main model's pass. We must skip all metadata modifications
-    // to prevent `pos_set` from asserting on an already-set cell.
+    // MTP KV cache updates should not modify cell metadata.
     if (!is_inplace_update) {
         // keep track of the max sequence position that we would overwrite with this ubatch
         // for non-SWA cache, this would be always empty

@@ -40,22 +40,7 @@ llama_tokens common_speculative_gen_draft(
     const llama_tokens & prompt,
     llama_token   id_last);
 
-/**
- * @brief Generates speculative draft tokens using the Multi-Token Prediction (MTP) architecture.
- * 
- * This function performs a recursive generation loop using the MTP head (e.g., Eagle/NextN).
- * It uses the fixed hidden state from the main model's last step and updates the MTP layer's 
- * internal KV cache autoregressively.
- * 
- * @param smpl      The sampler instance.
- * @param ctx       The llama context (shared between Main and MTP).
- * @param params    Speculative parameters (n_draft, p_min).
- * @param id_last   The last confirmed token ID from the main model.
- * @param n_past    The number of tokens in the validated past (start position for drafting).
- * @param seq_id    The sequence ID to use for drafting.
- * 
- * @return std::vector<llama_token> The generated draft tokens.
- */
+// Generates speculative draft tokens using the Multi-Token Prediction (MTP) architecture.
 llama_tokens mtp_speculative_gen_draft(
     struct common_sampler * smpl,
     struct llama_context * ctx,

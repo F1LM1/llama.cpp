@@ -238,10 +238,7 @@ private:
 
     bool prepare_mtp_graph_inputs(
         llm_graph_result * res,
-        const llama_ubatch & ubatch,
         const llama_mtp_params & mtp_params);
-
-    std::unique_ptr<struct llama_memory_context_i> mtp_memory_batch(const llama_batch & batch_inp);
 
     // TODO: read/write lora adapters and cvec
     size_t state_write_data(llama_io_write_i & io);

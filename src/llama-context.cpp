@@ -18,7 +18,6 @@
 //
 // llama_context
 //
-// Key for the graph cache. It contains all parameters that define the graph topology.
 
 struct llama_context_kv_cache_data {
     llama_kv_cache::slot_info_vec_t last_main_model_sinfos;
@@ -867,7 +866,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     }
 
     if (mtp_params.op_type != MTP_OP_NONE) { // If it is any MTP operation
-        if (!prepare_mtp_graph_inputs(res, ubatch, mtp_params)) {
+        if (!prepare_mtp_graph_inputs(res, mtp_params)) {
             ret = GGML_STATUS_FAILED;
             return nullptr;
         }
@@ -1242,12 +1241,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
         // extract logits
         if (t_logits && n_outputs > 0) {
-            // MTP operations that are purely for updating the KV cache
-            // (MTP_OP_WARMUP and MTP_OP_UPDATE_ACCEPTED) also produce a logit tensor
-            // as a side effect of running the graph. If these logits are copied
-            // back to the main context buffer, they will overwrite the valid logits
-            // produced by the main model's pass, leading to incorrect sampling.
-            // This condition explicitly prevents that copy for cache-only operations.
+            // Do not process logits if MTP is only updating the KV cache.
             if (batch_inp.mtp_params.op_type != MTP_OP_WARMUP &&
                 batch_inp.mtp_params.op_type != MTP_OP_UPDATE_ACCEPTED) {
                 ggml_backend_t backend_res = ggml_backend_sched_get_tensor_backend(sched.get(), t_logits);
@@ -1568,21 +1562,6 @@ llm_graph_params llama_context::graph_params(
         /*.cb          =*/ graph_get_cb(),
         /*.res         =*/ res,
     };
-}
-
-std::unique_ptr<llama_memory_context_i> llama_context::mtp_memory_batch(const llama_batch& batch_inp) {
-    const auto& vocab = model.vocab;
-    const auto& hparams = model.hparams;
-
-    const int64_t n_vocab = vocab.n_tokens();
-    const int64_t n_embd = hparams.n_embd;
-
-    if (!balloc->init(batch_inp, vocab, memory.get(), n_embd, cparams.kv_unified ? LLAMA_MAX_SEQ : cparams.n_seq_max, false)) {
-        LLAMA_LOG_ERROR("%s: failed to initialize batch\n", __func__);
-        return nullptr;
-    }
-
-    return memory->init_batch(*balloc, 1, false);
 }
 
 ggml_status llama_context::graph_compute(
@@ -3167,14 +3146,7 @@ void llama_kv_cache_seq_rm(struct llama_context * ctx, llama_seq_id seq_id, llam
     ctx->kv_cache_seq_rm(seq_id, p0, p1);
 }
 
-/*
-    Initializes the memory context for a decode operation.
-    The logic follows a specific priority:
-    1. Warmup: Always use a standard batch initialization.
-    2. Forced S-Info (MTP Updates): If a specific KV cache layout is forced, use it.
-    3. Default: Use a standard batch initialization, and if it's a main model pass,
-       save the resulting s-info for potential future reuse by MTP.
-*/
+// Select the proper slot_info for the decode based on the operation type.
 std::unique_ptr<llama_memory_context_i> llama_context::initialize_decode_context(const llama_batch & batch_inp, const bool output_all) {
     auto * kvd = static_cast<llama_context_kv_cache_data *>(kv_cache_data);
     std::unique_ptr<llama_memory_context_i> mctx;
@@ -3204,7 +3176,6 @@ std::unique_ptr<llama_memory_context_i> llama_context::initialize_decode_context
 
 bool llama_context::prepare_mtp_graph_inputs(
     llm_graph_result * res,
-    const llama_ubatch & ubatch,
     const llama_mtp_params & mtp_params) {
     
     const char * target_tensor_name = "result_embd_pooled";
@@ -3218,13 +3189,6 @@ bool llama_context::prepare_mtp_graph_inputs(
     }
 
     if (source_hidden_state != nullptr && hidden_states_input != nullptr) {
-        const char * op_type;
-        if (mtp_params.op_type == MTP_OP_WARMUP || mtp_params.op_type == MTP_OP_UPDATE_ACCEPTED) {
-            op_type = "MTP_UPDATE";
-        } else { // MTP_OP_DRAFT_GEN
-            op_type = "DRAFT_GEN";
-        }
-
         ggml_backend_tensor_set(hidden_states_input, source_hidden_state, 0, ggml_nbytes(hidden_states_input));
     } else {
         LLAMA_LOG_ERROR("%s: MTP hidden state input tensor ('%s') not found or main embd buffer is null\n",

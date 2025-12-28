@@ -297,20 +297,27 @@ bool llama_batch_allocr::init(
             if (p0 >= 0) {
                 bool ok = true;
 
-                if (seq_pos_min(s) != p0 + 1) {
-                    ok = false;
+                // MTP Update kv-cache reuse the same position from before.
+                if (batch.mtp_params.op_type == MTP_OP_WARMUP) {
+                    if (seq_pos_min(s) > p0 + 1) {
+                        ok = false;
+                    }
+                } else {
+                    if (seq_pos_min(s) != p0 + 1) {
+                        ok = false;
+                    }
                 }
 
-            // if (!ok) {
-            //     LLAMA_LOG_ERROR(
-            //             "%s: the tokens of sequence %d in the input batch have inconsistent sequence positions:\n"
-            //             " - the last position stored in the memory module of the context (i.e. the KV cache) for sequence %d is X = %d\n"
-            //             " - the tokens for sequence %d in the input batch have a starting position of Y = %d\n"
-            //             " it is required that the sequence positions remain consecutive: Y = X + 1\n",
-            //             __func__, s, s, p0, s, seq_pos_min(s));
+            if (!ok) {
+                LLAMA_LOG_ERROR(
+                        "%s: the tokens of sequence %d in the input batch have inconsistent sequence positions:\n"
+                        " - the last position stored in the memory module of the context (i.e. the KV cache) for sequence %d is X = %d\n"
+                        " - the tokens for sequence %d in the input batch have a starting position of Y = %d\n"
+                        " it is required that the sequence positions remain consecutive: Y = X + 1\n",
+                        __func__, s, s, p0, s, seq_pos_min(s));
 
-            //     return false;
-            // }
+                return false;
+            }
         }
 
             if (seq_pos_max(s) - seq_pos_min(s) + 1 > (int) seq_pos[s].size()) {
@@ -862,13 +869,14 @@ struct llama_batch llama_batch_get_one(
              llama_token * tokens,
                  int32_t   n_tokens) {
     return {
-        /*n_tokens =*/ n_tokens,
-        /*tokens   =*/ tokens,
-        /*embd     =*/ nullptr,
-        /*pos      =*/ nullptr,
-        /*n_seq_id =*/ nullptr,
-        /*seq_id   =*/ nullptr,
-        /*logits   =*/ nullptr,
+        /*n_tokens    =*/ n_tokens,
+        /*tokens      =*/ tokens,
+        /*embd        =*/ nullptr,
+        /*pos         =*/ nullptr,
+        /*n_seq_id    =*/ nullptr,
+        /*seq_id      =*/ nullptr,
+        /*logits      =*/ nullptr,
+        /*.mtp_params =*/ { MTP_OP_NONE },
     };
 }
 
