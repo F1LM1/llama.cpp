@@ -1564,20 +1564,6 @@ llm_graph_params llama_context::graph_params(
     };
 }
 
-std::unique_ptr<llama_memory_context_i> llama_context::mtp_memory_batch(const llama_batch& batch_inp) {
-    const auto& vocab = model.vocab;
-    const auto& hparams = model.hparams;
-
-    const int64_t n_embd = hparams.n_embd;
-
-    if (!balloc->init(batch_inp, vocab, memory.get(), n_embd, cparams.kv_unified ? LLAMA_MAX_SEQ : cparams.n_seq_max, false)) {
-        LLAMA_LOG_ERROR("%s: failed to initialize batch\n", __func__);
-        return nullptr;
-    }
-
-    return memory->init_batch(*balloc, 1, false);
-}
-
 ggml_status llama_context::graph_compute(
             ggml_cgraph * gf,
                    bool   batched) {
